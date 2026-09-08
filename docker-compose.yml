@@ -1,0 +1,27 @@
+name: mausam-pulse-road-safety
+
+services:
+  road-safety:
+    build: .
+    ports:
+      - "127.0.0.1:${MAUSAM_PORT:-8080}:8080"
+    environment:
+      MAUSAM_API_KEY: ${MAUSAM_API_KEY:-demo-local-key}
+      MAUSAM_DATABASE: /data/mausam-pulse.db
+      MAUSAM_DEMO_MODE: ${MAUSAM_DEMO_MODE:-true}
+      MAUSAM_DEMO_INTERVAL: ${MAUSAM_DEMO_INTERVAL:-2}
+      MAUSAM_CORS_ORIGIN: ${MAUSAM_CORS_ORIGIN:-http://localhost:8080}
+      MAUSAM_QUIET: ${MAUSAM_QUIET:-false}
+    volumes:
+      - mausam-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
+volumes:
+  mausam-data:

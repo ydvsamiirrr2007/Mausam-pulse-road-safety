@@ -1,0 +1,1 @@
+"""MausamPulse test suite."""

@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#ffffff" />
+    <meta
+      name="description"
+      content="Real-time weather, visibility, braking, collision and pothole intelligence for safer roads."
+    />
+    <title>MausamPulse · Live Road Safety</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <a class="brand" href="#live-map" aria-label="MausamPulse live map">
+        <span class="brand-mark" aria-hidden="true"><span></span></span>
+        <span class="brand-copy"
+          ><strong>MausamPulse</strong><small>Live road safety</small></span
+        >
+      </a>
+      <div class="header-status" aria-label="System connection status">
+        <span id="connection" class="connection"
+          ><i></i><span>Connecting</span></span
+        >
+        <time id="clock">—</time>
+      </div>
+      <div class="header-actions">
+        <button
+          id="track-user"
+          class="header-button primary"
+          type="button"
+          aria-pressed="false"
+        >
+          <span class="button-icon locate-icon" aria-hidden="true"></span
+          ><span>Track me</span>
+        </button>
+        <button
+          id="theme-toggle"
+          class="icon-button"
+          type="button"
+          aria-label="Switch to dark theme"
+          title="Switch theme"
+        >
+          <span class="theme-icon" aria-hidden="true"></span>
+        </button>
+      </div>
+    </header>
+
+    <div class="safety-banner" role="note">
+      <strong>Driver safety:</strong> use this display before a trip or with a
+      passenger. Alerts support decisions; they do not replace attentive driving
+      or certified vehicle systems.
+    </div>
+
+    <main>
+      <section
+        id="metrics"
+        class="metric-grid"
+        aria-label="Live system summary"
+      ></section>
+
+      <section class="workspace" aria-label="Live road situation">
+        <article id="live-map" class="surface map-surface">
+          <header class="surface-header map-header">
+            <div>
+              <span class="eyebrow"
+                ><i class="live-dot"></i> Live operations</span
+              >
+              <h1>Road situation</h1>
+              <p id="map-status">Mumbai · vehicles, weather and road hazards</p>
+            </div>
+            <div class="map-type-control" aria-label="Map style">
+              <button
+                class="map-type active"
+                type="button"
+                data-map-mode="road"
+                aria-pressed="true"
+              >
+                Map
+              </button>
+              <button
+                class="map-type"
+                type="button"
+                data-map-mode="satellite"
+                aria-pressed="false"
+              >
+                Satellite
+              </button>
+            </div>
+          </header>
+
+          <div class="layer-bar" aria-label="Map layers">
+            <span>Layers</span>
+            <button
+              class="layer-toggle active"
+              type="button"
+              data-layer="vehicles"
+              aria-pressed="true"
+            >
+              <i class="layer-dot vehicle"></i>Vehicles
+            </button>
+            <button
+              class="layer-toggle active"
+              type="button"
+              data-layer="weather"
+              aria-pressed="true"
+            >
+              <i class="layer-dot weather"></i>Weather
+            </button>
+            <button
+              class="layer-toggle active"
+              type="button"
+              data-layer="potholes"
+              aria-pressed="true"
+            >
+              <i class="layer-dot pothole"></i>Potholes
+            </button>
+          </div>
+
+          <div
+            id="map"
+            class="map"
+            aria-label="Interactive live road map"
+            tabindex="0"
+          >
+            <div class="map-fallback" aria-hidden="true">
+              <i class="fallback-road road-one"></i
+              ><i class="fallback-road road-two"></i
+              ><i class="fallback-road road-three"></i>
+            </div>
+            <div id="tile-layer" class="tile-layer" aria-hidden="true"></div>
+            <div id="map-layers" class="map-layers"></div>
+            <div id="map-selection" class="map-selection" hidden></div>
+
+            <div class="map-controls" aria-label="Map controls">
+              <button id="zoom-in" type="button" aria-label="Zoom in">+</button>
+              <button id="zoom-out" type="button" aria-label="Zoom out">
+                −
+              </button>
+              <button
+                id="fit-map"
+                class="fit-button"
+                type="button"
+                aria-label="Show all live activity"
+                title="Show all activity"
+              >
+                <span aria-hidden="true">⌖</span>
+              </button>
+            </div>
+            <div class="map-legend" aria-label="Map legend">
+              <span><i class="legend-symbol vehicle"></i>Vehicle</span>
+              <span><i class="legend-symbol weather"></i>Weather area</span>
+              <span><i class="legend-symbol pothole"></i>Pothole</span>
+            </div>
+            <div id="map-attribution" class="map-attribution">
+              © OpenStreetMap contributors
+            </div>
+          </div>
+        </article>
+
+        <aside class="risk-rail" aria-label="Live alerts and guidance">
+          <article id="tracker-card" class="surface tracker-card">
+            <header class="mini-header">
+              <div>
+                <span class="eyebrow">Your position</span>
+                <h2>Visibility tracker</h2>
+              </div>
+              <span id="tracker-state" class="status-chip idle"
+                ><i></i>Off</span
+              >
+            </header>
+            <div id="tracker-content" class="tracker-content">
+              <div class="tracker-illustration" aria-hidden="true">
+                <span></span>
+              </div>
+              <h3>Track rain and fog around you</h3>
+              <p>
+                Turn on location to filter live weather alerts and potholes
+                around your route.
+              </p>
+              <button id="tracker-start" class="action-button" type="button">
+                Start live tracking
+              </button>
+            </div>
+          </article>
+
+          <article
+            id="priority-panel"
+            class="surface priority-panel"
+            aria-live="polite"
+          ></article>
+
+          <article class="surface weather-panel">
+            <header class="mini-header">
+              <div>
+                <span class="eyebrow">Official + local</span>
+                <h2>Weather alerts</h2>
+              </div>
+              <span id="weather-count" class="count-pill">0</span>
+            </header>
+            <div id="weather-alerts" class="stack-list weather-list"></div>
+          </article>
+        </aside>
+      </section>
+
+      <section class="surface vehicle-section">
+        <header class="surface-header">
+          <div>
+            <span class="eyebrow">Consent-aware live telemetry</span>
+            <h2>Vehicles & drivers</h2>
+            <p>
+              Collision timing, visibility guidance and traffic-light braking in
+              one view.
+            </p>
+          </div>
+          <span id="privacy-mode" class="privacy-pill"
+            >Public privacy view</span
+          >
+        </header>
+        <div id="vehicles" class="vehicle-grid"></div>
+      </section>
+
+      <section class="lower-grid">
+        <article class="surface list-panel">
+          <header class="surface-header compact-header">
+            <div>
+              <span class="eyebrow">Road intelligence</span>
+              <h2>Potholes near the route</h2>
+            </div>
+            <span class="legend-note"
+              ><i class="layer-dot pothole"></i>Multi-source confidence</span
+            >
+          </header>
+          <div id="potholes" class="stack-list scroll-list"></div>
+        </article>
+
+        <article class="surface list-panel">
+          <header class="surface-header compact-header">
+            <div>
+              <span class="eyebrow">Action queue</span>
+              <h2>Recent safety events</h2>
+            </div>
+            <span class="legend-note">Newest first</span>
+          </header>
+          <div id="events" class="event-list scroll-list"></div>
+        </article>
+      </section>
+
+      <details class="surface demo-panel">
+        <summary>
+          <span>Demo & authorized owner controls</span
+          ><small>Presentation controls</small>
+        </summary>
+        <div class="controls">
+          <label
+            >Local API key<input
+              id="api-key"
+              type="password"
+              value="demo-local-key"
+              autocomplete="off"
+          /></label>
+          <label
+            >Authorized viewer
+            <select id="viewer-id">
+              <option value="">Public privacy view</option>
+              <option value="usr_asha">Asha owner view</option>
+              <option value="usr_ravi">Ravi owner view</option>
+            </select>
+          </label>
+          <div class="control-buttons">
+            <button id="refresh" type="button">Refresh now</button>
+            <button id="step" class="primary-control" type="button">
+              Generate update
+            </button>
+            <button id="reset" class="danger" type="button">Reset demo</button>
+          </div>
+        </div>
+        <p id="control-message" class="control-message">
+          The demo key is local-only. Change it before any shared deployment.
+        </p>
+      </details>
+    </main>
+
+    <footer>
+      <span><strong>MausamPulse</strong> · road-weather safety MVP</span>
+      <a href="/api/schema" target="_blank" rel="noreferrer">API schema</a>
+      <span id="last-updated">Waiting for data</span>
+    </footer>
+
+    <div
+      id="toast-region"
+      class="toast-region"
+      aria-live="assertive"
+      aria-atomic="true"
+    ></div>
+    <script src="/app.js" defer></script>
+  </body>
+</html>
