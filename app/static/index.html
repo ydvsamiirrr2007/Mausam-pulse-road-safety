@@ -1,18 +1,21 @@
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 
-// Initialize MapLibre map globally
-let map = null;
-let activeMarkers = [];
-let weatherSourceAdded = false;
-
+const TILE_SIZE = 256;
 const state = {
   data: null,
   stream: null,
   lastToast: {},
   map: {
+    latitude: 19.076,
+    longitude: 72.8777,
+    zoom: 13,
+    mode: "road",
     layers: { vehicles: true, weather: true, potholes: true },
+    fitted: false,
+    tileKey: "",
     selected: null,
+    drag: null,
   },
   tracking: {
     watchId: null,
@@ -84,10 +87,6 @@ function weatherGlyph(type) {
   if (["strong_winds", "cyclone"].includes(type)) return "↝";
   return "!";
 }
-
-/* =========================================
-   UI RENDERING (Metrics, Weather, Vehicles, etc.)
-   ========================================= */
 
 function renderMetrics(data) {
   const priority = data.recent_events.filter((event) =>
@@ -373,76 +372,101 @@ function renderEvents(events) {
     : `<div class="empty-state"><span>✓</span><strong>No safety event recorded</strong><p>New live warnings appear here.</p></div>`;
 }
 
-/* =========================================
-   MAP RENDERING & OVERLAYS (MapLibre GL JS)
-   ========================================= */
+function worldPoint(latitude, longitude, zoom) {
+  const lat = Math.max(-85.05112878, Math.min(85.05112878, Number(latitude)));
+  const scale = TILE_SIZE * 2 ** zoom;
+  const sinLatitude = Math.sin((lat * Math.PI) / 180);
+  return {
+    x: ((Number(longitude) + 180) / 360) * scale,
+    y:
+      (0.5 - Math.log((1 + sinLatitude) / (1 - sinLatitude)) / (4 * Math.PI)) *
+      scale,
+  };
+}
 
-function initMap() {
-  map = new maplibregl.Map({
-    container: "map",
-    style: "https://tiles.openfreemap.org/styles/liberty",
-    center: [72.8777, 19.076], // [longitude, latitude]
-    zoom: 13,
-    attributionControl: false, // We'll handle attribution manually
-  });
+function coordinatesFromWorld(x, y, zoom) {
+  const scale = TILE_SIZE * 2 ** zoom;
+  const longitude = (x / scale) * 360 - 180;
+  const n = Math.PI - (2 * Math.PI * y) / scale;
+  const latitude = (180 / Math.PI) * Math.atan(Math.sinh(n));
+  return { latitude, longitude: ((longitude + 540) % 360) - 180 };
+}
 
-  map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+function mapPixel(latitude, longitude, rect) {
+  const center = worldPoint(
+    state.map.latitude,
+    state.map.longitude,
+    state.map.zoom,
+  );
+  const point = worldPoint(latitude, longitude, state.map.zoom);
+  return {
+    x: point.x - center.x + rect.width / 2,
+    y: point.y - center.y + rect.height / 2,
+  };
+}
 
-  map.on("load", () => {
-    // Add a source for weather zones (circles)
-    map.addSource("weather-zones", {
-      type: "geojson",
-      data: { type: "FeatureCollection", features: [] },
+function tileUrl(zoom, x, y) {
+  if (state.map.mode === "satellite") {
+    return `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${zoom}/${y}/${x}`;
+  }
+  return `https://tile.openstreetmap.org/${zoom}/${x}/${y}.png`;
+}
+
+function renderTiles() {
+  const map = $("#map");
+  const tileLayer = $("#tile-layer");
+  const rect = map.getBoundingClientRect();
+  if (rect.width < 40 || rect.height < 40) return;
+  const center = worldPoint(
+    state.map.latitude,
+    state.map.longitude,
+    state.map.zoom,
+  );
+  const minWorldX = center.x - rect.width / 2;
+  const minWorldY = center.y - rect.height / 2;
+  const startX = Math.floor(minWorldX / TILE_SIZE);
+  const endX = Math.floor((center.x + rect.width / 2) / TILE_SIZE);
+  const startY = Math.floor(minWorldY / TILE_SIZE);
+  const endY = Math.floor((center.y + rect.height / 2) / TILE_SIZE);
+  const tileCount = 2 ** state.map.zoom;
+  const tileKey = [
+    state.map.mode,
+    state.map.zoom,
+    startX,
+    endX,
+    startY,
+    endY,
+  ].join(":");
+  if (tileKey === state.map.tileKey) {
+    [...tileLayer.children].forEach((image) => {
+      image.style.left = `${Number(image.dataset.tileX) * TILE_SIZE - minWorldX}px`;
+      image.style.top = `${Number(image.dataset.tileY) * TILE_SIZE - minWorldY}px`;
     });
-
-    // Add a layer for weather zones
-    map.addLayer({
-      id: "weather-zones-layer",
-      type: "circle",
-      source: "weather-zones",
-      paint: {
-        "circle-radius": [
-          "interpolate",
-          ["linear"],
-          ["zoom"],
-          10, ["/", ["get", "radius"], 500],
-          15, ["/", ["get", "radius"], 50],
-        ],
-        "circle-color": [
-          "match",
-          ["get", "event_type"],
-          "rain", "#3b82f6",
-          "fog", "#9ca3af",
-          "thunderstorm", "#8b5cf6",
-          "#f59e0b" // default
-        ],
-        "circle-opacity": 0.2,
-        "circle-stroke-width": 2,
-        "circle-stroke-color": [
-          "match",
-          ["get", "event_type"],
-          "rain", "#2563eb",
-          "fog", "#6b7280",
-          "thunderstorm", "#7c3aed",
-          "#d97706" // default
-        ],
-      },
-    });
-
-    if (state.data) renderMapOverlays();
-  });
-
-  // Handle clicking on the map background to close selection
-  map.on("click", (e) => {
-    if (e.originalEvent.target.closest("#map-layers")) return;
-    state.map.selected = null;
-    renderMapSelection();
-  });
-
-  // Update the map attribution
-  map.on("styledata", () => {
-    $("#map-attribution").textContent = "Map © OpenFreeMap · markers © MausamPulse";
-  });
+    return;
+  }
+  state.map.tileKey = tileKey;
+  tileLayer.innerHTML = "";
+  for (let tileY = startY; tileY <= endY; tileY += 1) {
+    if (tileY < 0 || tileY >= tileCount) continue;
+    for (let tileX = startX; tileX <= endX; tileX += 1) {
+      const wrappedX = ((tileX % tileCount) + tileCount) % tileCount;
+      const image = document.createElement("img");
+      image.className = "map-tile";
+      image.alt = "";
+      image.draggable = false;
+      image.src = tileUrl(state.map.zoom, wrappedX, tileY);
+      image.dataset.tileX = tileX;
+      image.dataset.tileY = tileY;
+      image.style.left = `${tileX * TILE_SIZE - minWorldX}px`;
+      image.style.top = `${tileY * TILE_SIZE - minWorldY}px`;
+      image.addEventListener("error", () => image.remove(), { once: true });
+      tileLayer.append(image);
+    }
+  }
+  $("#map-attribution").textContent =
+    state.map.mode === "satellite"
+      ? "Imagery © Esri · markers © MausamPulse"
+      : "© OpenStreetMap contributors · markers © MausamPulse";
 }
 
 function renderMapSelection() {
@@ -486,123 +510,150 @@ function renderMapSelection() {
 }
 
 function renderMapOverlays() {
-  if (!map || !map.loaded()) return;
-
-  // Clear existing DOM markers
-  activeMarkers.forEach((marker) => marker.remove());
-  activeMarkers = [];
-
-  // 1. Update Weather Zones (GeoJSON Layer)
-  if (state.map.layers.weather && state.data) {
-    const features = state.data.weather_alerts.map((alert) => ({
-      type: "Feature",
-      geometry: { type: "Point", coordinates: [Number(alert.longitude), Number(alert.latitude)] },
-      properties: {
-        radius: (Number(alert.radius_km) || 10) * 1000,
-        event_type: alert.event_type,
-        title: alert.title,
-        id: alert.id,
-      },
-    }));
-    if (map.getSource("weather-zones")) {
-      map.getSource("weather-zones").setData({ type: "FeatureCollection", features });
-    }
-  } else if (map.getSource("weather-zones")) {
-    map.getSource("weather-zones").setData({ type: "FeatureCollection", features: [] });
+  const map = $("#map");
+  const rect = map.getBoundingClientRect();
+  if (!state.data || rect.width < 40) return;
+  const overlays = [];
+  if (state.map.layers.weather) {
+    state.data.weather_alerts.forEach((alert) => {
+      const point = mapPixel(alert.latitude, alert.longitude, rect);
+      const metresPerPixel =
+        (156543.03392 * Math.cos((Number(alert.latitude) * Math.PI) / 180)) /
+        2 ** state.map.zoom;
+      const diameter = Math.max(
+        72,
+        Math.min(440, (Number(alert.radius_km || 10) * 2000) / metresPerPixel),
+      );
+      overlays.push(
+        `<button class="weather-zone ${esc(alert.event_type)}" style="left:${point.x}px;top:${point.y}px;width:${diameter}px;height:${diameter}px" type="button" data-map-kind="weather" data-map-id="${esc(alert.id)}" aria-label="${esc(alert.title)}"><span>${weatherGlyph(alert.event_type)} ${esc(titleCase(alert.event_type))}</span></button>`,
+      );
+    });
   }
-
-  // 2. Add DOM Markers for Vehicles, Potholes, and User
-  if (state.data) {
-    // Vehicles
-    if (state.map.layers.vehicles) {
-      state.data.vehicles
-        .filter((v) => v.latitude != null)
-        .forEach((vehicle) => {
-          const el = document.createElement("div");
-          el.className = `map-marker vehicle-marker level-${esc(vehicle.assessments?.collision?.level || "low")}`;
-          el.innerHTML = `<span class="pulse-ring"></span><span class="pin" style="--heading:${Number(vehicle.heading_deg || 0)}deg">▲</span>`;
-          el.addEventListener("click", (e) => {
-            e.stopPropagation();
-            state.map.selected = { kind: "vehicle", id: vehicle.id };
-            renderMapSelection();
-          });
-          const marker = new maplibregl.Marker({ element: el })
-            .setLngLat([Number(vehicle.longitude), Number(vehicle.latitude)])
-            .addTo(map);
-          activeMarkers.push(marker);
-        });
-    }
-
-    // Potholes
-    if (state.map.layers.potholes) {
-      state.data.potholes.forEach((pothole) => {
-        const el = document.createElement("div");
-        el.className = "map-marker pothole-marker";
-        el.innerHTML = `<span class="pin">!</span>`;
-        el.addEventListener("click", (e) => {
-          e.stopPropagation();
-          state.map.selected = { kind: "pothole", id: pothole.id };
-          renderMapSelection();
-        });
-        const marker = new maplibregl.Marker({ element: el })
-          .setLngLat([Number(pothole.longitude), Number(pothole.latitude)])
-          .addTo(map);
-        activeMarkers.push(marker);
+  if (state.map.layers.potholes) {
+    state.data.potholes.forEach((pothole) => {
+      const point = mapPixel(pothole.latitude, pothole.longitude, rect);
+      overlays.push(
+        `<button class="map-marker pothole-marker" style="left:${point.x}px;top:${point.y}px" type="button" data-map-kind="pothole" data-map-id="${esc(pothole.id)}" aria-label="${esc(titleCase(pothole.severity))} pothole, ${Math.round(pothole.confidence * 100)} percent confidence"><span class="pin">!</span><span class="marker-label">${esc(titleCase(pothole.status))} pothole</span></button>`,
+      );
+    });
+  }
+  if (state.map.layers.vehicles) {
+    state.data.vehicles
+      .filter((vehicle) => vehicle.latitude != null)
+      .forEach((vehicle) => {
+        const point = mapPixel(vehicle.latitude, vehicle.longitude, rect);
+        const level = vehicle.assessments?.collision?.level || "low";
+        overlays.push(
+          `<button class="map-marker vehicle-marker level-${esc(level)}" style="left:${point.x}px;top:${point.y}px" type="button" data-map-kind="vehicle" data-map-id="${esc(vehicle.id)}" aria-label="${esc(vehicle.vehicle_name)}, ${numberOrDash(vehicle.speed_kph, 0)} kilometres per hour"><span class="pulse-ring"></span><span class="pin" style="--heading:${Number(vehicle.heading_deg || 0)}deg">▲</span><span class="marker-label"><strong>${esc(vehicle.vehicle_name)}</strong>${numberOrDash(vehicle.speed_kph, 0)} km/h</span></button>`,
+        );
       });
-    }
   }
-
-  // User Location
   if (state.tracking.location) {
     const location = state.tracking.location;
-    const el = document.createElement("div");
-    el.className = "map-marker user-marker";
-    el.innerHTML = `<span class="accuracy-ring" style="width:${Math.max(38, Math.min(150, location.accuracy / 2))}px;height:${Math.max(38, Math.min(150, location.accuracy / 2))}px"></span><span class="pin"></span>`;
-    el.addEventListener("click", (e) => {
-      e.stopPropagation();
-      state.map.selected = { kind: "user", id: "current" };
-      renderMapSelection();
-    });
-    const marker = new maplibregl.Marker({ element: el })
-      .setLngLat([location.longitude, location.latitude])
-      .addTo(map);
-    activeMarkers.push(marker);
+    const point = mapPixel(location.latitude, location.longitude, rect);
+    overlays.push(
+      `<button class="map-marker user-marker" style="left:${point.x}px;top:${point.y}px" type="button" data-map-kind="user" data-map-id="current" aria-label="Your live position"><span class="accuracy-ring" style="width:${Math.max(38, Math.min(150, location.accuracy / 2))}px;height:${Math.max(38, Math.min(150, location.accuracy / 2))}px"></span><span class="pin"></span><span class="marker-label"><strong>You</strong>Live position</span></button>`,
+    );
   }
-
+  $("#map-layers").innerHTML = overlays.join("");
   renderMapSelection();
+}
+
+function renderMap() {
+  renderTiles();
+  renderMapOverlays();
+}
+
+function allMapPoints() {
+  if (!state.data) return [];
+  const points = [];
+  state.data.vehicles.forEach(
+    (item) =>
+      item.latitude != null &&
+      points.push([Number(item.latitude), Number(item.longitude)]),
+  );
+  state.data.potholes.forEach((item) =>
+    points.push([Number(item.latitude), Number(item.longitude)]),
+  );
+  state.data.weather_alerts.forEach((item) =>
+    points.push([Number(item.latitude), Number(item.longitude)]),
+  );
+  if (state.tracking.location)
+    points.push([
+      state.tracking.location.latitude,
+      state.tracking.location.longitude,
+    ]);
+  return points;
 }
 
 function fitMapToData(force = false) {
-  if (!map || !state.data) return;
-  const points = [];
-  state.data.vehicles.forEach((item) => item.latitude != null && points.push([Number(item.longitude), Number(item.latitude)]));
-  state.data.potholes.forEach((item) => points.push([Number(item.longitude), Number(item.latitude)]));
-  state.data.weather_alerts.forEach((item) => points.push([Number(item.longitude), Number(item.latitude)]));
-  if (state.tracking.location) points.push([state.tracking.location.longitude, state.tracking.location.latitude]);
-
-  if (!points.length) return;
-
-  if (points.length === 1) {
-    map.flyTo({ center: points[0], zoom: 14 });
-    return;
+  const points = allMapPoints();
+  const rect = $("#map").getBoundingClientRect();
+  if (!points.length || rect.width < 40) return;
+  if (state.map.fitted && !force) return;
+  const minLatitude = Math.min(...points.map((point) => point[0]));
+  const maxLatitude = Math.max(...points.map((point) => point[0]));
+  const minLongitude = Math.min(...points.map((point) => point[1]));
+  const maxLongitude = Math.max(...points.map((point) => point[1]));
+  state.map.latitude = (minLatitude + maxLatitude) / 2;
+  state.map.longitude = (minLongitude + maxLongitude) / 2;
+  for (let zoom = 17; zoom >= 3; zoom -= 1) {
+    const northWest = worldPoint(maxLatitude, minLongitude, zoom);
+    const southEast = worldPoint(minLatitude, maxLongitude, zoom);
+    if (
+      Math.abs(southEast.x - northWest.x) <= Math.max(120, rect.width - 180) &&
+      Math.abs(southEast.y - northWest.y) <= Math.max(120, rect.height - 180)
+    ) {
+      state.map.zoom = Math.min(15, zoom);
+      break;
+    }
   }
-
-  const bounds = points.reduce((acc, coord) => acc.extend(coord), new maplibregl.LngLatBounds(points[0], points[0]));
-  map.fitBounds(bounds, { padding: 60, maxZoom: 15 });
+  state.map.fitted = true;
+  state.map.tileKey = "";
+  renderMap();
 }
 
-function setMapCenter(latitude, longitude, zoom = 15, selected = null) {
-  if (!map) return;
+function setMapCenter(
+  latitude,
+  longitude,
+  zoom = Math.max(state.map.zoom, 14),
+  selected = null,
+) {
   if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
+  state.map.latitude = latitude;
+  state.map.longitude = longitude;
+  state.map.zoom = Math.min(19, Math.max(3, zoom));
   state.map.selected = selected;
-  map.flyTo({ center: [longitude, latitude], zoom });
+  state.map.fitted = true;
+  state.map.tileKey = "";
+  renderMap();
   $("#live-map").scrollIntoView({ behavior: "smooth", block: "start" });
-  renderMapSelection();
 }
 
-/* =========================================
-   TRACKING & STATE MANAGEMENT
-   ========================================= */
+function changeZoom(delta) {
+  const next = Math.max(3, Math.min(19, state.map.zoom + delta));
+  if (next === state.map.zoom) return;
+  state.map.zoom = next;
+  state.map.tileKey = "";
+  renderMap();
+}
+
+function panMap(deltaX, deltaY) {
+  const center = worldPoint(
+    state.map.latitude,
+    state.map.longitude,
+    state.map.zoom,
+  );
+  const coordinates = coordinatesFromWorld(
+    center.x + deltaX,
+    center.y + deltaY,
+    state.map.zoom,
+  );
+  state.map.latitude = coordinates.latitude;
+  state.map.longitude = coordinates.longitude;
+  state.map.tileKey = "";
+  renderMap();
+}
 
 function nearestWeatherAlert() {
   if (!state.data?.weather_alerts?.length) return null;
@@ -636,7 +687,8 @@ function renderTracker() {
       </div>
       <div class="tracker-meta"><span>GPS accuracy ±${Math.round(location.accuracy)} m</span>${weather?.distance_km != null ? `<span>${numberOrDash(weather.distance_km, 1)} km from alert centre</span>` : ""}</div>
       <button class="secondary-button" type="button" data-stop-tracking>Stop tracking</button>`;
-    $("#map-status").textContent = `Following your position · accuracy ±${Math.round(location.accuracy)} m`;
+    $("#map-status").textContent =
+      `Following your position · accuracy ±${Math.round(location.accuracy)} m`;
     return;
   }
   chip.className = "status-chip idle";
@@ -650,7 +702,8 @@ function renderTracker() {
     <p>${esc(state.tracking.error || "Turn on location to filter live weather alerts and potholes around your route.")}</p>
     <button id="tracker-start" class="action-button" type="button">${state.tracking.error ? "Try again" : "Start live tracking"}</button>`;
   if (state.data)
-    $("#map-status").textContent = `${state.data.vehicles.length} vehicles · ${state.data.weather_alerts.length} weather alerts · ${state.data.potholes.length} road hazards`;
+    $("#map-status").textContent =
+      `${state.data.vehicles.length} vehicles · ${state.data.weather_alerts.length} weather alerts · ${state.data.potholes.length} road hazards`;
 }
 
 function stopTracking() {
@@ -661,7 +714,7 @@ function stopTracking() {
   state.tracking.error = "";
   state.map.selected = null;
   renderTracker();
-  renderMapOverlays();
+  renderMap();
   loadState().catch((error) => setMessage(error.message, true));
 }
 
@@ -685,11 +738,15 @@ function startTracking() {
         speed: position.coords.speed,
       };
       state.tracking.error = "";
-      if (firstPosition && map) {
-        map.flyTo({ center: [position.coords.longitude, position.coords.latitude], zoom: 14 });
+      if (firstPosition) {
+        state.map.latitude = position.coords.latitude;
+        state.map.longitude = position.coords.longitude;
+        state.map.zoom = 14;
+        state.map.fitted = true;
+        state.map.tileKey = "";
       }
       renderTracker();
-      renderMapOverlays();
+      renderMap();
       const now = Date.now();
       if (firstPosition || now - state.tracking.lastFetchAt > 5000) {
         state.tracking.lastFetchAt = now;
@@ -703,7 +760,8 @@ function startTracking() {
         2: "Your position could not be determined. Check GPS or network location and try again.",
         3: "Location took too long to respond. Try again in an open area.",
       };
-      state.tracking.error = messages[error.code] || "Location could not be started.";
+      state.tracking.error =
+        messages[error.code] || "Location could not be started.";
       renderTracker();
     },
     { enableHighAccuracy: true, timeout: 10000, maximumAge: 3000 },
@@ -724,7 +782,8 @@ function render(data) {
   renderPotholes(data.potholes);
   renderEvents(data.recent_events);
   renderTracker();
-  renderMapOverlays();
+  if (!state.map.fitted) fitMapToData();
+  else renderMap();
   $("#last-updated").textContent = `Updated ${clockTime(data.generated_at)}`;
   const viewer = $("#viewer-id").value;
   $("#privacy-mode").textContent = viewer
@@ -749,7 +808,8 @@ async function loadState() {
   const response = await fetch(`/api/state${query.size ? `?${query}` : ""}`, {
     headers,
   });
-  if (!response.ok) throw new Error(`Live state request failed (${response.status})`);
+  if (!response.ok)
+    throw new Error(`Live state request failed (${response.status})`);
   render(await response.json());
 }
 
@@ -763,7 +823,8 @@ async function post(path, body = {}) {
     body: JSON.stringify(body),
   });
   const result = await response.json();
-  if (!response.ok) throw new Error(result.message || `Request failed (${response.status})`);
+  if (!response.ok)
+    throw new Error(result.message || `Request failed (${response.status})`);
   return result;
 }
 
@@ -788,12 +849,26 @@ function eventNotification(name, payload) {
   if (now - (state.lastToast[name] || 0) < 8000) return;
   const detail = payload?.data || {};
   if (name === "weather.alert")
-    showToast("New weather alert", detail.title || "Conditions changed nearby", "yellow");
+    showToast(
+      "New weather alert",
+      detail.title || "Conditions changed nearby",
+      "yellow",
+    );
   else if (name === "pothole.detected")
-    showToast("Road hazard detected", "A possible pothole was added to the live map.", "yellow");
-  else if (name === "safety.collision" && ["high", "critical"].includes(detail.level))
+    showToast(
+      "Road hazard detected",
+      "A possible pothole was added to the live map.",
+      "yellow",
+    );
+  else if (
+    name === "safety.collision" &&
+    ["high", "critical"].includes(detail.level)
+  )
     showToast("Collision risk", eventAction(detail), "red");
-  else if (name === "safety.visibility" && ["high", "critical"].includes(detail.level))
+  else if (
+    name === "safety.visibility" &&
+    ["high", "critical"].includes(detail.level)
+  )
     showToast("Low visibility", eventAction(detail), "red");
   else if (name === "safety.traffic_signal")
     showToast("Traffic-light braking", eventAction(detail), "red");
@@ -815,11 +890,20 @@ function connectEvents() {
     connection.innerHTML = "<i></i><span>Reconnecting</span>";
   };
   [
-    "telemetry.updated", "weather.alert", "pothole.detected", "pothole.updated",
-    "safety.collision", "safety.visibility", "safety.traffic_signal",
+    "telemetry.updated",
+    "weather.alert",
+    "pothole.detected",
+    "pothole.updated",
+    "safety.collision",
+    "safety.visibility",
+    "safety.traffic_signal",
   ].forEach((name) => {
     stream.addEventListener(name, (event) => {
-      try { eventNotification(name, JSON.parse(event.data)); } catch (_) {}
+      try {
+        eventNotification(name, JSON.parse(event.data));
+      } catch (_) {
+        /* Ignore malformed optional notification data. */
+      }
       loadState().catch(() => {});
     });
   });
@@ -830,25 +914,121 @@ function applyTheme(theme) {
   document.documentElement.dataset.theme = selected;
   localStorage.setItem("mausam-theme", selected);
   const button = $("#theme-toggle");
-  button.setAttribute("aria-label", selected === "light" ? "Switch to dark theme" : "Switch to light theme");
-  $("meta[name='theme-color']").setAttribute("content", selected === "light" ? "#ffffff" : "#111318");
+  button.setAttribute(
+    "aria-label",
+    selected === "light" ? "Switch to dark theme" : "Switch to light theme",
+  );
+  $("meta[name='theme-color']").setAttribute(
+    "content",
+    selected === "light" ? "#ffffff" : "#111318",
+  );
 }
 
-/* =========================================
-   INITIALIZATION & EVENT LISTENERS
-   ========================================= */
+function installMapInteractions() {
+  const map = $("#map");
+  map.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || event.target.closest("button")) return;
+    const center = worldPoint(
+      state.map.latitude,
+      state.map.longitude,
+      state.map.zoom,
+    );
+    state.map.drag = {
+      pointerId: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      center,
+    };
+    map.setPointerCapture(event.pointerId);
+    map.classList.add("dragging");
+  });
+  map.addEventListener("pointermove", (event) => {
+    if (!state.map.drag || state.map.drag.pointerId !== event.pointerId) return;
+    const x = state.map.drag.center.x - (event.clientX - state.map.drag.x);
+    const y = state.map.drag.center.y - (event.clientY - state.map.drag.y);
+    const coordinates = coordinatesFromWorld(x, y, state.map.zoom);
+    state.map.latitude = coordinates.latitude;
+    state.map.longitude = coordinates.longitude;
+    renderMap();
+  });
+  const endDrag = (event) => {
+    if (!state.map.drag || state.map.drag.pointerId !== event.pointerId) return;
+    state.map.drag = null;
+    map.classList.remove("dragging");
+  };
+  map.addEventListener("pointerup", endDrag);
+  map.addEventListener("pointercancel", endDrag);
+  map.addEventListener(
+    "wheel",
+    (event) => {
+      event.preventDefault();
+      changeZoom(event.deltaY < 0 ? 1 : -1);
+    },
+    { passive: false },
+  );
+  map.addEventListener("dblclick", (event) => {
+    if (!event.target.closest("button")) changeZoom(1);
+  });
+  map.addEventListener("keydown", (event) => {
+    const keyActions = {
+      "+": () => changeZoom(1),
+      "=": () => changeZoom(1),
+      "-": () => changeZoom(-1),
+      ArrowUp: () => panMap(0, -80),
+      ArrowDown: () => panMap(0, 80),
+      ArrowLeft: () => panMap(-80, 0),
+      ArrowRight: () => panMap(80, 0),
+    };
+    if (keyActions[event.key]) {
+      event.preventDefault();
+      keyActions[event.key]();
+    }
+  });
+  $("#map-layers").addEventListener("click", (event) => {
+    const target = event.target.closest("[data-map-kind]");
+    if (!target) return;
+    state.map.selected = {
+      kind: target.dataset.mapKind,
+      id: target.dataset.mapId,
+    };
+    renderMapSelection();
+  });
+  $("#map-selection").addEventListener("click", (event) => {
+    if (event.target.closest("#close-map-selection")) {
+      state.map.selected = null;
+      renderMapSelection();
+    }
+  });
+  if (window.ResizeObserver) {
+    new ResizeObserver(() => {
+      state.map.tileKey = "";
+      renderMap();
+    }).observe(map);
+  }
+}
 
 $("#refresh").addEventListener("click", () =>
-  loadState().then(() => setMessage("Live view refreshed.")).catch((error) => setMessage(error.message, true)),
+  loadState()
+    .then(() => setMessage("Live view refreshed."))
+    .catch((error) => setMessage(error.message, true)),
 );
 $("#viewer-id").addEventListener("change", () =>
   loadState().catch((error) => setMessage(error.message, true)),
 );
 $("#step").addEventListener("click", () =>
-  post("/api/demo/step").then(loadState).then(() => setMessage("One live demo update generated.")).catch((error) => setMessage(error.message, true)),
+  post("/api/demo/step")
+    .then(loadState)
+    .then(() => setMessage("One live demo update generated."))
+    .catch((error) => setMessage(error.message, true)),
 );
 $("#reset").addEventListener("click", () =>
-  post("/api/demo/seed", { reset: true }).then(() => loadState()).then(() => setMessage("Demo data reset and streaming.")).catch((error) => setMessage(error.message, true)),
+  post("/api/demo/seed", { reset: true })
+    .then(() => {
+      state.map.fitted = false;
+      return loadState();
+    })
+    .then(() => setMessage("Demo data reset and streaming."))
+    .catch((error) => setMessage(error.message, true)),
 );
 $("#track-user").addEventListener("click", toggleTracking);
 $("#tracker-card").addEventListener("click", (event) => {
@@ -856,11 +1036,29 @@ $("#tracker-card").addEventListener("click", (event) => {
   if (event.target.closest("[data-stop-tracking]")) stopTracking();
 });
 $("#theme-toggle").addEventListener("click", () =>
-  applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark"),
+  applyTheme(
+    document.documentElement.dataset.theme === "dark" ? "light" : "dark",
+  ),
 );
-$("#zoom-in").addEventListener("click", () => map && map.zoomIn());
-$("#zoom-out").addEventListener("click", () => map && map.zoomOut());
-$("#fit-map").addEventListener("click", () => fitMapToData(true));
+$("#zoom-in").addEventListener("click", () => changeZoom(1));
+$("#zoom-out").addEventListener("click", () => changeZoom(-1));
+$("#fit-map").addEventListener("click", () => {
+  state.map.fitted = false;
+  fitMapToData(true);
+});
+
+$$("[data-map-mode]").forEach((button) =>
+  button.addEventListener("click", () => {
+    state.map.mode = button.dataset.mapMode;
+    state.map.tileKey = "";
+    $$("[data-map-mode]").forEach((item) => {
+      const active = item === button;
+      item.classList.toggle("active", active);
+      item.setAttribute("aria-pressed", String(active));
+    });
+    renderMap();
+  }),
+);
 
 $$("[data-layer]").forEach((button) =>
   button.addEventListener("click", () => {
@@ -886,11 +1084,13 @@ document.addEventListener("click", (event) => {
   );
 });
 
-// Start the app
 applyTheme(localStorage.getItem("mausam-theme") || "light");
-initMap();
+installMapInteractions();
 setInterval(() => {
-  $("#clock").textContent = new Date().toLocaleString([], { dateStyle: "medium", timeStyle: "medium" });
+  $("#clock").textContent = new Date().toLocaleString([], {
+    dateStyle: "medium",
+    timeStyle: "medium",
+  });
 }, 1000);
 setInterval(() => loadState().catch(() => {}), 10000);
 connectEvents();
