@@ -467,7 +467,7 @@ function renderTiles() {
   $("#map-attribution").textContent =
     state.map.mode === "satellite"
       ? "Imagery © Esri · markers © MausamPulse"
-      : "© OpenStreetMap contributors · markers © MausamPulse";
+      : "Map © Esri · markers © MausamPulse";
 }
 
 function renderMapSelection() {
