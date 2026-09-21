@@ -62,11 +62,13 @@ class RoadSafetyService:
         self.db = database
         self.events = event_bus or EventBus()
 
+    # ----------------------------------------------------------------- users
     def create_user(self, payload: dict[str, Any]) -> dict[str, Any]:
         record = self.db.create_user(validate_user(payload))
         self.events.publish("user.created", {"refresh": True})
         return record
 
+    # -------------------------------------------------------------- vehicles
     def create_vehicle(self, payload: dict[str, Any]) -> dict[str, Any]:
         data = validate_vehicle(payload)
         if not self.db.user_exists(data["owner_user_id"]):
@@ -75,29 +77,36 @@ class RoadSafetyService:
         self.events.publish("vehicle.created", {"refresh": True})
         return record
 
+    # -------------------------------------------------------- weather alerts
     def create_weather_alert(self, payload: dict[str, Any]) -> dict[str, Any]:
         record = self.db.create_weather_alert(validate_weather_alert(payload))
         self.events.publish("weather.alert", record)
         return record
 
+    # -------------------------------------------------------------- potholes
     def create_pothole_report(self, payload: dict[str, Any]) -> dict[str, Any]:
         data = validate_pothole_report(payload)
         record = self.db.report_pothole(**data)
         self.events.publish("pothole.updated", self._pothole_view(record))
         return record
 
+    # -------------------------------------------------------------- telemetry
     def ingest_telemetry(self, payload: dict[str, Any]) -> dict[str, Any]:
         data = validate_telemetry(payload)
-        if not self.db.vehicle_for_user(data["vehicle_id"], data["user_id"]):
-            raise PermissionError("vehicle_id does not belong to user_id")
-        previous = self.db.latest_telemetry(data["vehicle_id"])
+        vehicle_id = data["vehicle_id"]
+
+        # Look up the previous sample for this vehicle so the braking
+        # assessment can compare consecutive speeds.
+        previous = self.db.latest_telemetry_for_vehicle(vehicle_id)
         previous_speed = previous["speed_kph"] if previous else None
         previous_time = previous["observed_at"] if previous else None
 
         collision = assess_collision(
-            data["speed_kph"],
-            data["lead_vehicle_distance_m"],
-            data["lead_vehicle_speed_kph"],
+            speed_kph=data["speed_kph"],
+            lead_vehicle_distance_m=data["lead_vehicle_distance_m"],
+            lead_vehicle_speed_kph=data["lead_vehicle_speed_kph"],
+            weather_condition=data["weather_condition"],
+            visibility_m=data["visibility_m"],
         )
         braking = assess_braking(
             speed_kph=data["speed_kph"],
@@ -136,7 +145,10 @@ class RoadSafetyService:
         }
         record = self.db.insert_telemetry(data, assessments)
 
-        if collision.level in {"critical", "high", "moderate"}:
+        # Safety events: only the two highest collision severities are worth
+        # surfacing to the live SSE stream. "moderate" is deliberately excluded
+        # so the stream is not flooded with routine warnings.
+        if collision.level in {"critical", "high"}:
             event = self.db.insert_safety_event(
                 data, "collision_risk", collision.level, assessments["collision"]
             )
@@ -185,6 +197,7 @@ class RoadSafetyService:
         record["pothole_detection"] = pothole
         return record
 
+    # ------------------------------------------------------------ projections
     @staticmethod
     def _public_reference(value: str) -> str:
         return "public_" + hashlib.sha256(("mausam-public:" + value).encode()).hexdigest()[:10]
@@ -250,6 +263,7 @@ class RoadSafetyService:
             result["user_id"] = item["user_id"]
         return result
 
+    # ------------------------------------------------------------- read APIs
     def state(
         self,
         *,
@@ -288,6 +302,7 @@ class RoadSafetyService:
             for item in self.db.nearby_potholes(latitude, longitude, radius_km)
         ]
 
+    # ------------------------------------------------------------------ demo
     def seed_demo(self, reset: bool = False) -> dict[str, Any]:
         if reset:
             self.db.clear_demo_data()
