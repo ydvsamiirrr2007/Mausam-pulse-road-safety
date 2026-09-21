@@ -192,18 +192,19 @@ class Database:
             )
         return record
 
-    def user_exists(self, user_id: str) -> bool:
-        """Check if a user exists."""
-        with self.connection() as conn:
-            return conn.execute("SELECT 1 FROM users WHERE id = ?", (user_id,)).fetchone() is not None
+    # CURRENT: No validation for None/empty values
+def user_exists(self, user_id: str) -> bool:
+    """Check if a user exists."""
+    with self.connection() as conn:
+        return conn.execute("SELECT 1 FROM users WHERE id = ?", (user_id,)).fetchone() is not None
 
-    def vehicle_for_user(self, vehicle_id: str, user_id: str) -> bool:
-        """Check if vehicle belongs to user."""
-        with self.connection() as conn:
-            return conn.execute(
-                "SELECT 1 FROM vehicles WHERE id = ? AND owner_user_id = ?",
-                (vehicle_id, user_id),
-            ).fetchone() is not None
+def vehicle_for_user(self, vehicle_id: str, user_id: str) -> bool:
+    """Check if vehicle belongs to user."""
+    with self.connection() as conn:
+        return conn.execute(
+            "SELECT 1 FROM vehicles WHERE id = ? AND owner_user_id = ?",
+            (vehicle_id, user_id),
+        ).fetchone() is not None 
 
     def latest_telemetry(self, vehicle_id: str) -> dict[str, Any] | None:
         """Get the latest telemetry for a vehicle."""
