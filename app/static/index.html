@@ -1,304 +1,897 @@
-<!doctype html>
-<html lang="en" data-theme="light">
-  <head> 
-    <script src='https://unpkg.com/maplibre-gl@latest/dist/maplibre-gl.js'></script>
-<link href='https://unpkg.com/maplibre-gl@latest/dist/maplibre-gl.css' rel='stylesheet' />
-    <meta charset="utf-8" />
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1, viewport-fit=cover"
-    />
-    <meta name="theme-color" content="#ffffff" />
-    <meta
-      name="description"
-      content="Real-time weather, visibility, braking, collision and pothole intelligence for safer roads."
-    />
-    <title>MausamPulse · Live Road Safety</title>
-    <link rel="stylesheet" href="/styles.css" />
-  </head>
-  <body>
-    <header class="app-header">
-      <a class="brand" href="#live-map" aria-label="MausamPulse live map">
-        <span class="brand-mark" aria-hidden="true"><span></span></span>
-        <span class="brand-copy"
-          ><strong>MausamPulse</strong><small>Live road safety</small></span
-        >
-      </a>
-      <div class="header-status" aria-label="System connection status">
-        <span id="connection" class="connection"
-          ><i></i><span>Connecting</span></span
-        >
-        <time id="clock">—</time>
-      </div>
-      <div class="header-actions">
-        <button
-          id="track-user"
-          class="header-button primary"
-          type="button"
-          aria-pressed="false"
-        >
-          <span class="button-icon locate-icon" aria-hidden="true"></span
-          ><span>Track me</span>
-        </button>
-        <button
-          id="theme-toggle"
-          class="icon-button"
-          type="button"
-          aria-label="Switch to dark theme"
-          title="Switch theme"
-        >
-          <span class="theme-icon" aria-hidden="true"></span>
-        </button>
-      </div>
-    </header>
+const $ = (selector) => document.querySelector(selector);
+const $$ = (selector) => [...document.querySelectorAll(selector)];
 
-    <div class="safety-banner" role="note">
-      <strong>Driver safety:</strong> use this display before a trip or with a
-      passenger. Alerts support decisions; they do not replace attentive driving
-      or certified vehicle systems.
-    </div>
+// Initialize MapLibre map globally
+let map = null;
+let activeMarkers = [];
+let weatherSourceAdded = false;
 
-    <main>
-      <section
-        id="metrics"
-        class="metric-grid"
-        aria-label="Live system summary"
-      ></section>
+const state = {
+  data: null,
+  stream: null,
+  lastToast: {},
+  map: {
+    layers: { vehicles: true, weather: true, potholes: true },
+    selected: null,
+  },
+  tracking: {
+    watchId: null,
+    location: null,
+    error: "",
+    lastFetchAt: 0,
+  },
+};
 
-      <section class="workspace" aria-label="Live road situation">
-        <article id="live-map" class="surface map-surface">
-          <header class="surface-header map-header">
-            <div>
-              <span class="eyebrow"
-                ><i class="live-dot"></i> Live operations</span
-              >
-              <h1>Road situation</h1>
-              <p id="map-status">Mumbai · vehicles, weather and road hazards</p>
-            </div>
-            <div class="map-type-control" aria-label="Map style">
-              <button
-                class="map-type active"
-                type="button"
-                data-map-mode="road"
-                aria-pressed="true"
-              >
-                Map
-              </button>
-              <button
-                class="map-type"
-                type="button"
-                data-map-mode="satellite"
-                aria-pressed="false"
-              >
-                Satellite
-              </button>
-            </div>
-          </header>
+function esc(value) {
+  return String(value ?? "—").replace(
+    /[&<>'"]/g,
+    (character) =>
+      ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        "'": "&#39;",
+        '"': "&quot;",
+      })[character],
+  );
+}
 
-          <div class="layer-bar" aria-label="Map layers">
-            <span>Layers</span>
-            <button
-              class="layer-toggle active"
-              type="button"
-              data-layer="vehicles"
-              aria-pressed="true"
-            >
-              <i class="layer-dot vehicle"></i>Vehicles
-            </button>
-            <button
-              class="layer-toggle active"
-              type="button"
-              data-layer="weather"
-              aria-pressed="true"
-            >
-              <i class="layer-dot weather"></i>Weather
-            </button>
-            <button
-              class="layer-toggle active"
-              type="button"
-              data-layer="potholes"
-              aria-pressed="true"
-            >
-              <i class="layer-dot pothole"></i>Potholes
-            </button>
-          </div>
+function titleCase(value) {
+  return String(value || "unknown")
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+}
 
-          <div
-            id="map"
-            class="map"
-            aria-label="Interactive live road map"
-            tabindex="0"
-          >
-            <div class="map-fallback" aria-hidden="true">
-              <i class="fallback-road road-one"></i
-              ><i class="fallback-road road-two"></i
-              ><i class="fallback-road road-three"></i>
-            </div>
-            <div id="tile-layer" class="tile-layer" aria-hidden="true"></div>
-            <div id="map-layers" class="map-layers"></div>
-            <div id="map-selection" class="map-selection" hidden></div>
+function numberOrDash(value, digits = 0) {
+  return Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : "—";
+}
 
-            <div class="map-controls" aria-label="Map controls">
-              <button id="zoom-in" type="button" aria-label="Zoom in">+</button>
-              <button id="zoom-out" type="button" aria-label="Zoom out">
-                −
-              </button>
-              <button
-                id="fit-map"
-                class="fit-button"
-                type="button"
-                aria-label="Show all live activity"
-                title="Show all activity"
-              >
-                <span aria-hidden="true">⌖</span>
-              </button>
-            </div>
-            <div class="map-legend" aria-label="Map legend">
-              <span><i class="legend-symbol vehicle"></i>Vehicle</span>
-              <span><i class="legend-symbol weather"></i>Weather area</span>
-              <span><i class="legend-symbol pothole"></i>Pothole</span>
-            </div>
-            <div id="map-attribution" class="map-attribution">
-              © OpenStreetMap contributors
-            </div>
-          </div>
-        </article>
+function badge(value) {
+  return `<span class="badge ${esc(value)}">${esc(titleCase(value))}</span>`;
+}
 
-        <aside class="risk-rail" aria-label="Live alerts and guidance">
-          <article id="tracker-card" class="surface tracker-card">
-            <header class="mini-header">
-              <div>
-                <span class="eyebrow">Your position</span>
-                <h2>Visibility tracker</h2>
-              </div>
-              <span id="tracker-state" class="status-chip idle"
-                ><i></i>Off</span
-              >
-            </header>
-            <div id="tracker-content" class="tracker-content">
-              <div class="tracker-illustration" aria-hidden="true">
-                <span></span>
-              </div>
-              <h3>Track rain and fog around you</h3>
-              <p>
-                Turn on location to filter live weather alerts and potholes
-                around your route.
-              </p>
-              <button id="tracker-start" class="action-button" type="button">
-                Start live tracking
-              </button>
-            </div>
-          </article>
+function timeAgo(value) {
+  if (!value) return "No telemetry";
+  const seconds = Math.max(
+    0,
+    Math.round((Date.now() - new Date(value).getTime()) / 1000),
+  );
+  if (seconds < 5) return "Just now";
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  return `${Math.floor(seconds / 3600)}h ago`;
+}
 
-          <article
-            id="priority-panel"
-            class="surface priority-panel"
-            aria-live="polite"
-          ></article>
+function clockTime(value) {
+  if (!value) return "—";
+  return new Date(value).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
 
-          <article class="surface weather-panel">
-            <header class="mini-header">
-              <div>
-                <span class="eyebrow">Official + local</span>
-                <h2>Weather alerts</h2>
-              </div>
-              <span id="weather-count" class="count-pill">0</span>
-            </header>
-            <div id="weather-alerts" class="stack-list weather-list"></div>
-          </article>
-        </aside>
-      </section>
+function formatUntil(value) {
+  if (!value) return "Until further notice";
+  return `Until ${new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+}
 
-      <section class="surface vehicle-section">
-        <header class="surface-header">
-          <div>
-            <span class="eyebrow">Consent-aware live telemetry</span>
-            <h2>Vehicles & drivers</h2>
-            <p>
-              Collision timing, visibility guidance and traffic-light braking in
-              one view.
-            </p>
-          </div>
-          <span id="privacy-mode" class="privacy-pill"
-            >Public privacy view</span
-          >
-        </header>
-        <div id="vehicles" class="vehicle-grid"></div>
-      </section>
+function weatherGlyph(type) {
+  if (String(type).includes("rain") || type === "flooding") return "☂";
+  if (type === "fog" || type === "dust_storm") return "≋";
+  if (["thunderstorm", "lightning"].includes(type)) return "ϟ";
+  if (["snow", "ice", "hail"].includes(type)) return "✳";
+  if (["strong_winds", "cyclone"].includes(type)) return "↝";
+  return "!";
+}
 
-      <section class="lower-grid">
-        <article class="surface list-panel">
-          <header class="surface-header compact-header">
-            <div>
-              <span class="eyebrow">Road intelligence</span>
-              <h2>Potholes near the route</h2>
-            </div>
-            <span class="legend-note"
-              ><i class="layer-dot pothole"></i>Multi-source confidence</span
-            >
-          </header>
-          <div id="potholes" class="stack-list scroll-list"></div>
-        </article>
+/* =========================================
+   UI RENDERING (Metrics, Weather, Vehicles, etc.)
+   ========================================= */
 
-        <article class="surface list-panel">
-          <header class="surface-header compact-header">
-            <div>
-              <span class="eyebrow">Action queue</span>
-              <h2>Recent safety events</h2>
-            </div>
-            <span class="legend-note">Newest first</span>
-          </header>
-          <div id="events" class="event-list scroll-list"></div>
-        </article>
-      </section>
+function renderMetrics(data) {
+  const priority = data.recent_events.filter((event) =>
+    ["critical", "high"].includes(event.level),
+  ).length;
+  const verified = data.potholes.filter(
+    (pothole) => pothole.status === "verified",
+  ).length;
+  const liveVehicles = data.vehicles.filter(
+    (vehicle) => vehicle.observed_at,
+  ).length;
+  const metrics = [
+    {
+      label: "Weather alerts",
+      value: data.weather_alerts.length,
+      note: "Rain, fog & severe weather",
+      tone: "blue",
+      icon: "☂",
+    },
+    {
+      label: "Vehicles online",
+      value: liveVehicles,
+      note: "Streaming consented telemetry",
+      tone: "green",
+      icon: "▲",
+    },
+    {
+      label: "Road hazards",
+      value: data.potholes.length,
+      note: `${verified} verified pothole${verified === 1 ? "" : "s"}`,
+      tone: "yellow",
+      icon: "!",
+    },
+    {
+      label: "Priority warnings",
+      value: priority,
+      note: "High & critical recent events",
+      tone: "red",
+      icon: "↘",
+    },
+  ];
+  $("#metrics").innerHTML = metrics
+    .map(
+      (metric) => `
+    <article class="metric ${metric.tone}">
+      <span class="metric-icon" aria-hidden="true">${metric.icon}</span>
+      <span class="metric-copy"><small>${esc(metric.label)}</small><strong>${esc(metric.value)}</strong><span>${esc(metric.note)}</span></span>
+    </article>`,
+    )
+    .join("");
+}
 
-      <details class="surface demo-panel">
-        <summary>
-          <span>Demo & authorized owner controls</span
-          ><small>Presentation controls</small>
-        </summary>
-        <div class="controls">
-          <label
-            >Local API key<input
-              id="api-key"
-              type="password"
-              value="demo-local-key"
-              autocomplete="off"
-          /></label>
-          <label
-            >Authorized viewer
-            <select id="viewer-id">
-              <option value="">Public privacy view</option>
-              <option value="usr_asha">Asha owner view</option>
-              <option value="usr_ravi">Ravi owner view</option>
-            </select>
-          </label>
-          <div class="control-buttons">
-            <button id="refresh" type="button">Refresh now</button>
-            <button id="step" class="primary-control" type="button">
-              Generate update
-            </button>
-            <button id="reset" class="danger" type="button">Reset demo</button>
-          </div>
+function renderWeather(alerts) {
+  $("#weather-count").textContent = alerts.length;
+  $("#weather-alerts").innerHTML = alerts.length
+    ? alerts
+        .map(
+          (alert) => `
+    <article class="alert-card ${esc(alert.severity)}">
+      <div class="alert-glyph ${esc(alert.event_type)}" aria-hidden="true">${weatherGlyph(alert.event_type)}</div>
+      <div class="alert-body">
+        <div class="row-head"><strong>${esc(alert.title)}</strong>${badge(alert.severity)}</div>
+        <p>${esc(alert.instructions || alert.description)}</p>
+        <div class="alert-meta">
+          <span>${esc(titleCase(alert.event_type))}</span>
+          ${alert.distance_km != null ? `<span>${numberOrDash(alert.distance_km, 1)} km away</span>` : ""}
+          <span>${esc(formatUntil(alert.ends_at))}</span>
         </div>
-        <p id="control-message" class="control-message">
-          The demo key is local-only. Change it before any shared deployment.
-        </p>
-      </details>
-    </main>
+        <button class="text-button" type="button" data-focus-lat="${Number(alert.latitude)}" data-focus-lon="${Number(alert.longitude)}" data-select-kind="weather" data-select-id="${esc(alert.id)}">Show on map</button>
+      </div>
+    </article>`,
+        )
+        .join("")
+    : `<div class="empty-state"><span>✓</span><strong>No active weather warning nearby</strong><p>Live monitoring remains on.</p></div>`;
+}
 
-    <footer>
-      <span><strong>MausamPulse</strong> · road-weather safety MVP</span>
-      <a href="/api/schema" target="_blank" rel="noreferrer">API schema</a>
-      <span id="last-updated">Waiting for data</span>
-    </footer>
+function eventAction(event) {
+  return (
+    event?.details?.recommended_action ||
+    event?.details?.guidance ||
+    event?.details?.explanation ||
+    "Continue monitoring the road."
+  );
+}
 
-    <div
-      id="toast-region"
-      class="toast-region"
-      aria-live="assertive"
-      aria-atomic="true"
-    ></div>
-    <script src="/app.js" defer></script>
-  </body>
-</html>
+function renderPriority(data) {
+  const event = data.recent_events.find((item) =>
+    ["critical", "high"].includes(item.level),
+  );
+  const weather = data.weather_alerts.find((item) =>
+    ["emergency", "warning"].includes(item.severity),
+  );
+  const panel = $("#priority-panel");
+  if (event) {
+    panel.className = `surface priority-panel level-${event.level}`;
+    panel.innerHTML = `
+      <div class="priority-top"><span class="eyebrow">Priority guidance</span>${badge(event.level)}</div>
+      <div class="priority-symbol" aria-hidden="true">${event.event_type.includes("collision") ? "↘" : event.event_type.includes("visibility") ? "◉" : "!"}</div>
+      <h2>${esc(titleCase(event.event_type))}</h2>
+      <p>${esc(eventAction(event))}</p>
+      <div class="priority-meta"><span>${esc(timeAgo(event.observed_at))}</span><button type="button" class="text-button" data-focus-lat="${Number(event.latitude)}" data-focus-lon="${Number(event.longitude)}">Locate event</button></div>`;
+    return;
+  }
+  if (weather) {
+    panel.className = "surface priority-panel level-moderate";
+    panel.innerHTML = `
+      <div class="priority-top"><span class="eyebrow">Priority guidance</span>${badge(weather.severity)}</div>
+      <div class="priority-symbol" aria-hidden="true">${weatherGlyph(weather.event_type)}</div>
+      <h2>${esc(weather.title)}</h2><p>${esc(weather.instructions)}</p>
+      <div class="priority-meta"><span>${esc(formatUntil(weather.ends_at))}</span></div>`;
+    return;
+  }
+  panel.className = "surface priority-panel level-low";
+  panel.innerHTML = `
+    <div class="priority-top"><span class="eyebrow">Priority guidance</span>${badge("low")}</div>
+    <div class="priority-symbol safe" aria-hidden="true">✓</div>
+    <h2>No immediate high-risk event</h2><p>Conditions can change quickly. Keep live monitoring active.</p>`;
+}
+
+function brakeSourceLabel(source) {
+  const labels = {
+    obd_can_exact_input: "Exact vehicle sensor",
+    simulated_obd_can_input: "Live demo sensor",
+    phone_estimate: "Phone speed estimate",
+    not_detected: "No braking signal",
+    unknown: "Waiting for signal",
+  };
+  return labels[source] || titleCase(source);
+}
+
+function trafficLight(stateName) {
+  const current = ["red", "amber", "green"].includes(stateName)
+    ? stateName
+    : "unknown";
+  return `<span class="traffic-light" aria-label="Traffic light: ${esc(current)}">
+    <i class="red ${current === "red" ? "active" : ""}"></i>
+    <i class="amber ${current === "amber" ? "active" : ""}"></i>
+    <i class="green ${current === "green" ? "active" : ""}"></i>
+  </span>`;
+}
+
+function renderVehicles(vehicles) {
+  $("#vehicles").innerHTML = vehicles.length
+    ? vehicles
+        .map((vehicle) => {
+          const assessments = vehicle.assessments || {};
+          const collision = assessments.collision || {};
+          const visibility = assessments.visibility || {};
+          const braking = assessments.braking || {};
+          const collisionLevel = collision.level || "unknown";
+          const ttc =
+            collision.time_to_collision_s == null
+              ? "Stable"
+              : `${numberOrDash(collision.time_to_collision_s, 1)}s`;
+          const ttcLabel =
+            collision.time_to_collision_s == null
+              ? "No closing risk"
+              : "Time to collision";
+          const pressure =
+            braking.brake_pressure_pct == null
+              ? "—"
+              : `${numberOrDash(braking.brake_pressure_pct, 0)}%`;
+          const deceleration =
+            braking.estimated_deceleration_mps2 == null
+              ? "—"
+              : `${numberOrDash(braking.estimated_deceleration_mps2, 1)} m/s²`;
+          const required =
+            braking.required_deceleration_mps2 == null
+              ? "—"
+              : `${numberOrDash(braking.required_deceleration_mps2, 1)} m/s²`;
+          const stopDistance =
+            braking.stopping_distance_m == null
+              ? "—"
+              : `${numberOrDash(braking.stopping_distance_m, 0)} m`;
+          const stopMargin =
+            braking.stop_margin_m == null
+              ? "—"
+              : `${braking.stop_margin_m > 0 ? "+" : ""}${numberOrDash(braking.stop_margin_m, 0)} m`;
+          const metadata =
+            [vehicle.manufacturer, vehicle.model, vehicle.color]
+              .filter(Boolean)
+              .join(" · ") || "Identity protected";
+          const registration = vehicle.registration_number
+            ? ` · ${vehicle.registration_number}`
+            : "";
+          const exactSignal = braking.source === "obd_can_exact_input";
+          const signalState = vehicle.traffic_light_state || "unknown";
+          const riskWidth =
+            collision.time_to_collision_s == null
+              ? 12
+              : Math.max(
+                  10,
+                  Math.min(
+                    100,
+                    ((7 - Number(collision.time_to_collision_s)) / 7) * 100,
+                  ),
+                );
+          const safeSpeed =
+            visibility.safe_speed_kph == null
+              ? "—"
+              : numberOrDash(visibility.safe_speed_kph, 0);
+          return `<article class="vehicle-card level-${esc(collisionLevel)}">
+      <header class="vehicle-head">
+        <div class="vehicle-identity">
+          <span class="vehicle-avatar" aria-hidden="true">${esc((vehicle.vehicle_name || "V").slice(0, 1).toUpperCase())}</span>
+          <div><div class="identity-line"><h3>${esc(vehicle.vehicle_name)}</h3><span class="online-chip"><i></i>${esc(timeAgo(vehicle.observed_at))}</span></div>
+          <p><strong>${esc(vehicle.user_name)}</strong> · ${esc(metadata)}${esc(registration)}</p></div>
+        </div>
+        ${vehicle.latitude != null ? `<button class="locate-mini" type="button" data-focus-lat="${Number(vehicle.latitude)}" data-focus-lon="${Number(vehicle.longitude)}" data-select-kind="vehicle" data-select-id="${esc(vehicle.id)}">Locate</button>` : ""}
+      </header>
+
+      <div class="safety-stat-grid">
+        <div class="safety-stat speed-stat"><span>Current speed</span><strong>${numberOrDash(vehicle.speed_kph, 0)}<small> km/h</small></strong><em>Limit ${vehicle.speed_limit_kph == null ? "—" : numberOrDash(vehicle.speed_limit_kph, 0)}</em></div>
+        <div class="safety-stat"><span>${esc(ttcLabel)}</span><strong class="risk-${esc(collisionLevel)}">${esc(ttc)}</strong><em>${esc(titleCase(collisionLevel))} risk</em></div>
+        <div class="safety-stat"><span>Road visibility</span><strong>${numberOrDash(vehicle.visibility_m, 0)}<small> m</small></strong><em>${esc(titleCase(vehicle.weather_condition))}</em></div>
+        <div class="safety-stat"><span>Safe speed guide</span><strong>${esc(safeSpeed)}<small> km/h</small></strong><em>${visibility.is_speed_above_guidance ? "Slow down" : "Within guide"}</em></div>
+      </div>
+
+      <div class="risk-meter" aria-label="Collision risk level"><span class="${esc(collisionLevel)}" style="width:${riskWidth}%"></span></div>
+      <div class="live-guidance ${esc(collisionLevel)}"><span aria-hidden="true">${collisionLevel === "critical" ? "!" : "→"}</span><p>${esc(collision.recommended_action || visibility.guidance || "Waiting for telemetry")}</p></div>
+
+      <section class="brake-console">
+        <div class="brake-title">
+          <div>${trafficLight(signalState)}<span><small>Traffic-light braking</small><strong>${esc(titleCase(braking.stop_line_status || "not applicable"))}</strong></span></div>
+          <span class="sensor-chip ${exactSignal ? "exact" : ""}"><i></i>${esc(brakeSourceLabel(braking.source || "unknown"))}</span>
+        </div>
+        <div class="brake-grid">
+          <div><span>Brake applied</span><strong>${esc(pressure)}</strong><small>${braking.brake_pressure_pct == null ? deceleration : "Pedal / pressure input"}</small></div>
+          <div><span>Distance to light</span><strong>${vehicle.distance_to_stop_line_m == null ? "—" : `${numberOrDash(vehicle.distance_to_stop_line_m, 0)} m`}</strong><small>Measured stop line</small></div>
+          <div><span>Calculated stop</span><strong>${esc(stopDistance)}</strong><small>Includes road condition</small></div>
+          <div class="${Number(braking.stop_margin_m) < 0 ? "danger-value" : ""}"><span>Safety margin</span><strong>${esc(stopMargin)}</strong><small>Available minus required</small></div>
+          <div><span>Required braking</span><strong>${esc(required)}</strong><small>To reach stop line</small></div>
+          <div><span>Lead vehicle</span><strong>${vehicle.lead_vehicle_distance_m == null ? "—" : `${numberOrDash(vehicle.lead_vehicle_distance_m, 0)} m`}</strong><small>${vehicle.lead_vehicle_speed_kph == null ? "No relative sensor" : `${numberOrDash(vehicle.lead_vehicle_speed_kph, 0)} km/h ahead`}</small></div>
+        </div>
+      </section>
+      <footer class="vehicle-footer"><span>Position: ${esc(titleCase(vehicle.location_precision))}</span>${vehicle.emergency_contact ? `<span>Emergency: ${esc(vehicle.emergency_contact)}</span>` : ""}</footer>
+    </article>`;
+        })
+        .join("")
+    : `<div class="empty-state wide"><span>○</span><strong>No vehicle telemetry yet</strong><p>Register a vehicle or start the demo stream.</p></div>`;
+}
+
+function renderPotholes(items) {
+  $("#potholes").innerHTML = items.length
+    ? items
+        .map(
+          (pothole) => `
+    <article class="pothole-card">
+      <div class="pothole-symbol" aria-hidden="true"><span>!</span></div>
+      <div class="pothole-copy">
+        <div class="row-head"><strong>${esc(titleCase(pothole.severity))} road defect</strong>${badge(pothole.status)}</div>
+        <p>${esc(pothole.report_count)} report${pothole.report_count === 1 ? "" : "s"} from ${esc(pothole.reporting_vehicle_count)} independent vehicle${pothole.reporting_vehicle_count === 1 ? "" : "s"}.</p>
+        <div class="confidence-row"><span><i style="width:${Math.round(pothole.confidence * 100)}%"></i></span><strong>${Math.round(pothole.confidence * 100)}%</strong></div>
+        <div class="alert-meta"><span>${numberOrDash(pothole.latitude, 4)}, ${numberOrDash(pothole.longitude, 4)}</span><span>${esc(timeAgo(pothole.last_reported_at))}</span></div>
+      </div>
+      <button class="locate-mini" type="button" data-focus-lat="${Number(pothole.latitude)}" data-focus-lon="${Number(pothole.longitude)}" data-select-kind="pothole" data-select-id="${esc(pothole.id)}">Locate</button>
+    </article>`,
+        )
+        .join("")
+    : `<div class="empty-state"><span>✓</span><strong>No pothole reports nearby</strong><p>Camera, IMU and manual reports appear here.</p></div>`;
+}
+
+function eventIcon(type) {
+  if (type.includes("collision")) return "↘";
+  if (type.includes("visibility")) return "◉";
+  if (type.includes("signal")) return "◇";
+  return "!";
+}
+
+function renderEvents(events) {
+  $("#events").innerHTML = events.length
+    ? events
+        .slice(0, 18)
+        .map(
+          (event) => `
+    <article class="event-row level-${esc(event.level)}">
+      <div class="event-icon" aria-hidden="true">${eventIcon(event.event_type)}</div>
+      <div class="event-copy"><div class="row-head"><strong>${esc(titleCase(event.event_type))}</strong>${badge(event.level)}</div><p>${esc(eventAction(event))}</p><span>${esc(timeAgo(event.observed_at))}</span></div>
+      <button class="locate-mini icon-only" type="button" aria-label="Locate event" data-focus-lat="${Number(event.latitude)}" data-focus-lon="${Number(event.longitude)}">⌖</button>
+    </article>`,
+        )
+        .join("")
+    : `<div class="empty-state"><span>✓</span><strong>No safety event recorded</strong><p>New live warnings appear here.</p></div>`;
+}
+
+/* =========================================
+   MAP RENDERING & OVERLAYS (MapLibre GL JS)
+   ========================================= */
+
+function initMap() {
+  map = new maplibregl.Map({
+    container: "map",
+    style: "https://tiles.openfreemap.org/styles/liberty",
+    center: [72.8777, 19.076], // [longitude, latitude]
+    zoom: 13,
+    attributionControl: false, // We'll handle attribution manually
+  });
+
+  map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+
+  map.on("load", () => {
+    // Add a source for weather zones (circles)
+    map.addSource("weather-zones", {
+      type: "geojson",
+      data: { type: "FeatureCollection", features: [] },
+    });
+
+    // Add a layer for weather zones
+    map.addLayer({
+      id: "weather-zones-layer",
+      type: "circle",
+      source: "weather-zones",
+      paint: {
+        "circle-radius": [
+          "interpolate",
+          ["linear"],
+          ["zoom"],
+          10, ["/", ["get", "radius"], 500],
+          15, ["/", ["get", "radius"], 50],
+        ],
+        "circle-color": [
+          "match",
+          ["get", "event_type"],
+          "rain", "#3b82f6",
+          "fog", "#9ca3af",
+          "thunderstorm", "#8b5cf6",
+          "#f59e0b" // default
+        ],
+        "circle-opacity": 0.2,
+        "circle-stroke-width": 2,
+        "circle-stroke-color": [
+          "match",
+          ["get", "event_type"],
+          "rain", "#2563eb",
+          "fog", "#6b7280",
+          "thunderstorm", "#7c3aed",
+          "#d97706" // default
+        ],
+      },
+    });
+
+    if (state.data) renderMapOverlays();
+  });
+
+  // Handle clicking on the map background to close selection
+  map.on("click", (e) => {
+    if (e.originalEvent.target.closest("#map-layers")) return;
+    state.map.selected = null;
+    renderMapSelection();
+  });
+
+  // Update the map attribution
+  map.on("styledata", () => {
+    $("#map-attribution").textContent = "Map © OpenFreeMap · markers © MausamPulse";
+  });
+}
+
+function renderMapSelection() {
+  const panel = $("#map-selection");
+  const selected = state.map.selected;
+  if (!selected || !state.data) {
+    panel.hidden = true;
+    panel.innerHTML = "";
+    return;
+  }
+  let title = "Live map item";
+  let detail = "";
+  let meta = "";
+  if (selected.kind === "vehicle") {
+    const vehicle = state.data.vehicles.find((item) => item.id === selected.id);
+    if (!vehicle) return void (panel.hidden = true);
+    title = vehicle.vehicle_name;
+    detail = `${vehicle.user_name} · ${numberOrDash(vehicle.speed_kph, 0)} km/h`;
+    meta = `${titleCase(vehicle.weather_condition)} · ${numberOrDash(vehicle.visibility_m, 0)} m visibility`;
+  } else if (selected.kind === "pothole") {
+    const pothole = state.data.potholes.find((item) => item.id === selected.id);
+    if (!pothole) return void (panel.hidden = true);
+    title = `${titleCase(pothole.severity)} pothole`;
+    detail = `${Math.round(pothole.confidence * 100)}% confidence · ${titleCase(pothole.status)}`;
+    meta = `${pothole.report_count} report${pothole.report_count === 1 ? "" : "s"}`;
+  } else if (selected.kind === "weather") {
+    const alert = state.data.weather_alerts.find(
+      (item) => item.id === selected.id,
+    );
+    if (!alert) return void (panel.hidden = true);
+    title = alert.title;
+    detail = alert.instructions;
+    meta = `${titleCase(alert.event_type)} · ${formatUntil(alert.ends_at)}`;
+  } else if (selected.kind === "user" && state.tracking.location) {
+    title = "Your live position";
+    detail = `Accuracy ±${Math.round(state.tracking.location.accuracy)} m`;
+    meta = `${numberOrDash(state.tracking.location.latitude, 4)}, ${numberOrDash(state.tracking.location.longitude, 4)}`;
+  }
+  panel.hidden = false;
+  panel.innerHTML = `<button id="close-map-selection" type="button" aria-label="Close map detail">×</button><strong>${esc(title)}</strong><p>${esc(detail)}</p><span>${esc(meta)}</span>`;
+}
+
+function renderMapOverlays() {
+  if (!map || !map.loaded()) return;
+
+  // Clear existing DOM markers
+  activeMarkers.forEach((marker) => marker.remove());
+  activeMarkers = [];
+
+  // 1. Update Weather Zones (GeoJSON Layer)
+  if (state.map.layers.weather && state.data) {
+    const features = state.data.weather_alerts.map((alert) => ({
+      type: "Feature",
+      geometry: { type: "Point", coordinates: [Number(alert.longitude), Number(alert.latitude)] },
+      properties: {
+        radius: (Number(alert.radius_km) || 10) * 1000,
+        event_type: alert.event_type,
+        title: alert.title,
+        id: alert.id,
+      },
+    }));
+    if (map.getSource("weather-zones")) {
+      map.getSource("weather-zones").setData({ type: "FeatureCollection", features });
+    }
+  } else if (map.getSource("weather-zones")) {
+    map.getSource("weather-zones").setData({ type: "FeatureCollection", features: [] });
+  }
+
+  // 2. Add DOM Markers for Vehicles, Potholes, and User
+  if (state.data) {
+    // Vehicles
+    if (state.map.layers.vehicles) {
+      state.data.vehicles
+        .filter((v) => v.latitude != null)
+        .forEach((vehicle) => {
+          const el = document.createElement("div");
+          el.className = `map-marker vehicle-marker level-${esc(vehicle.assessments?.collision?.level || "low")}`;
+          el.innerHTML = `<span class="pulse-ring"></span><span class="pin" style="--heading:${Number(vehicle.heading_deg || 0)}deg">▲</span>`;
+          el.addEventListener("click", (e) => {
+            e.stopPropagation();
+            state.map.selected = { kind: "vehicle", id: vehicle.id };
+            renderMapSelection();
+          });
+          const marker = new maplibregl.Marker({ element: el })
+            .setLngLat([Number(vehicle.longitude), Number(vehicle.latitude)])
+            .addTo(map);
+          activeMarkers.push(marker);
+        });
+    }
+
+    // Potholes
+    if (state.map.layers.potholes) {
+      state.data.potholes.forEach((pothole) => {
+        const el = document.createElement("div");
+        el.className = "map-marker pothole-marker";
+        el.innerHTML = `<span class="pin">!</span>`;
+        el.addEventListener("click", (e) => {
+          e.stopPropagation();
+          state.map.selected = { kind: "pothole", id: pothole.id };
+          renderMapSelection();
+        });
+        const marker = new maplibregl.Marker({ element: el })
+          .setLngLat([Number(pothole.longitude), Number(pothole.latitude)])
+          .addTo(map);
+        activeMarkers.push(marker);
+      });
+    }
+  }
+
+  // User Location
+  if (state.tracking.location) {
+    const location = state.tracking.location;
+    const el = document.createElement("div");
+    el.className = "map-marker user-marker";
+    el.innerHTML = `<span class="accuracy-ring" style="width:${Math.max(38, Math.min(150, location.accuracy / 2))}px;height:${Math.max(38, Math.min(150, location.accuracy / 2))}px"></span><span class="pin"></span>`;
+    el.addEventListener("click", (e) => {
+      e.stopPropagation();
+      state.map.selected = { kind: "user", id: "current" };
+      renderMapSelection();
+    });
+    const marker = new maplibregl.Marker({ element: el })
+      .setLngLat([location.longitude, location.latitude])
+      .addTo(map);
+    activeMarkers.push(marker);
+  }
+
+  renderMapSelection();
+}
+
+function fitMapToData(force = false) {
+  if (!map || !state.data) return;
+  const points = [];
+  state.data.vehicles.forEach((item) => item.latitude != null && points.push([Number(item.longitude), Number(item.latitude)]));
+  state.data.potholes.forEach((item) => points.push([Number(item.longitude), Number(item.latitude)]));
+  state.data.weather_alerts.forEach((item) => points.push([Number(item.longitude), Number(item.latitude)]));
+  if (state.tracking.location) points.push([state.tracking.location.longitude, state.tracking.location.latitude]);
+
+  if (!points.length) return;
+
+  if (points.length === 1) {
+    map.flyTo({ center: points[0], zoom: 14 });
+    return;
+  }
+
+  const bounds = points.reduce((acc, coord) => acc.extend(coord), new maplibregl.LngLatBounds(points[0], points[0]));
+  map.fitBounds(bounds, { padding: 60, maxZoom: 15 });
+}
+
+function setMapCenter(latitude, longitude, zoom = 15, selected = null) {
+  if (!map) return;
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
+  state.map.selected = selected;
+  map.flyTo({ center: [longitude, latitude], zoom });
+  $("#live-map").scrollIntoView({ behavior: "smooth", block: "start" });
+  renderMapSelection();
+}
+
+/* =========================================
+   TRACKING & STATE MANAGEMENT
+   ========================================= */
+
+function nearestWeatherAlert() {
+  if (!state.data?.weather_alerts?.length) return null;
+  return [...state.data.weather_alerts].sort(
+    (a, b) => (a.distance_km ?? 9999) - (b.distance_km ?? 9999),
+  )[0];
+}
+
+function renderTracker() {
+  const content = $("#tracker-content");
+  const chip = $("#tracker-state");
+  const headerButton = $("#track-user");
+  if (state.tracking.location) {
+    const location = state.tracking.location;
+    const weather = nearestWeatherAlert();
+    const isLowVisibility =
+      weather &&
+      ["fog", "heavy_rain", "rain", "dust_storm", "snow"].includes(
+        weather.event_type,
+      );
+    chip.className = `status-chip ${isLowVisibility ? "warning" : "live"}`;
+    chip.innerHTML = `<i></i>${isLowVisibility ? "Caution" : "Tracking"}`;
+    headerButton.setAttribute("aria-pressed", "true");
+    headerButton.classList.add("tracking");
+    headerButton.querySelector("span:last-child").textContent = "Tracking on";
+    content.innerHTML = `
+      <div class="tracker-live-head"><span class="tracker-position-icon"><i></i></span><div><small>Live location</small><strong>${numberOrDash(location.latitude, 4)}, ${numberOrDash(location.longitude, 4)}</strong></div></div>
+      <div class="visibility-callout ${isLowVisibility ? "warning" : "safe"}">
+        <span aria-hidden="true">${weather ? weatherGlyph(weather.event_type) : "✓"}</span>
+        <div><small>${weather ? titleCase(weather.event_type) : "Route conditions"}</small><strong>${weather ? weather.title : "No active weather alert nearby"}</strong><p>${weather ? weather.instructions : "Live monitoring is active around your position."}</p></div>
+      </div>
+      <div class="tracker-meta"><span>GPS accuracy ±${Math.round(location.accuracy)} m</span>${weather?.distance_km != null ? `<span>${numberOrDash(weather.distance_km, 1)} km from alert centre</span>` : ""}</div>
+      <button class="secondary-button" type="button" data-stop-tracking>Stop tracking</button>`;
+    $("#map-status").textContent = `Following your position · accuracy ±${Math.round(location.accuracy)} m`;
+    return;
+  }
+  chip.className = "status-chip idle";
+  chip.innerHTML = "<i></i>Off";
+  headerButton.setAttribute("aria-pressed", "false");
+  headerButton.classList.remove("tracking");
+  headerButton.querySelector("span:last-child").textContent = "Track me";
+  content.innerHTML = `
+    <div class="tracker-illustration" aria-hidden="true"><span></span></div>
+    <h3>${state.tracking.error ? "Location unavailable" : "Track rain and fog around you"}</h3>
+    <p>${esc(state.tracking.error || "Turn on location to filter live weather alerts and potholes around your route.")}</p>
+    <button id="tracker-start" class="action-button" type="button">${state.tracking.error ? "Try again" : "Start live tracking"}</button>`;
+  if (state.data)
+    $("#map-status").textContent = `${state.data.vehicles.length} vehicles · ${state.data.weather_alerts.length} weather alerts · ${state.data.potholes.length} road hazards`;
+}
+
+function stopTracking() {
+  if (state.tracking.watchId != null && navigator.geolocation)
+    navigator.geolocation.clearWatch(state.tracking.watchId);
+  state.tracking.watchId = null;
+  state.tracking.location = null;
+  state.tracking.error = "";
+  state.map.selected = null;
+  renderTracker();
+  renderMapOverlays();
+  loadState().catch((error) => setMessage(error.message, true));
+}
+
+function startTracking() {
+  if (!navigator.geolocation) {
+    state.tracking.error = "This browser does not provide location services.";
+    renderTracker();
+    return;
+  }
+  state.tracking.error = "";
+  $("#tracker-state").className = "status-chip loading";
+  $("#tracker-state").innerHTML = "<i></i>Locating";
+  state.tracking.watchId = navigator.geolocation.watchPosition(
+    (position) => {
+      const firstPosition = !state.tracking.location;
+      state.tracking.location = {
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude,
+        accuracy: position.coords.accuracy,
+        heading: position.coords.heading,
+        speed: position.coords.speed,
+      };
+      state.tracking.error = "";
+      if (firstPosition && map) {
+        map.flyTo({ center: [position.coords.longitude, position.coords.latitude], zoom: 14 });
+      }
+      renderTracker();
+      renderMapOverlays();
+      const now = Date.now();
+      if (firstPosition || now - state.tracking.lastFetchAt > 5000) {
+        state.tracking.lastFetchAt = now;
+        loadState().catch((error) => setMessage(error.message, true));
+      }
+    },
+    (error) => {
+      state.tracking.watchId = null;
+      const messages = {
+        1: "Location permission was not granted. Allow it in the browser to track local rain, fog and potholes.",
+        2: "Your position could not be determined. Check GPS or network location and try again.",
+        3: "Location took too long to respond. Try again in an open area.",
+      };
+      state.tracking.error = messages[error.code] || "Location could not be started.";
+      renderTracker();
+    },
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: 3000 },
+  );
+}
+
+function toggleTracking() {
+  if (state.tracking.watchId != null || state.tracking.location) stopTracking();
+  else startTracking();
+}
+
+function render(data) {
+  state.data = data;
+  renderMetrics(data);
+  renderWeather(data.weather_alerts);
+  renderPriority(data);
+  renderVehicles(data.vehicles);
+  renderPotholes(data.potholes);
+  renderEvents(data.recent_events);
+  renderTracker();
+  renderMapOverlays();
+  $("#last-updated").textContent = `Updated ${clockTime(data.generated_at)}`;
+  const viewer = $("#viewer-id").value;
+  $("#privacy-mode").textContent = viewer
+    ? `Authorized owner · ${viewer.replace("usr_", "")}`
+    : "Public privacy view";
+  $("#privacy-mode").classList.toggle("owner", Boolean(viewer));
+}
+
+async function loadState() {
+  const headers = {};
+  const viewer = $("#viewer-id").value;
+  if (viewer) {
+    headers.Authorization = `Bearer ${$("#api-key").value}`;
+    headers["X-Viewer-User-Id"] = viewer;
+  }
+  const query = new URLSearchParams();
+  if (state.tracking.location) {
+    query.set("lat", state.tracking.location.latitude);
+    query.set("lon", state.tracking.location.longitude);
+    query.set("radius_km", "25");
+  }
+  const response = await fetch(`/api/state${query.size ? `?${query}` : ""}`, {
+    headers,
+  });
+  if (!response.ok) throw new Error(`Live state request failed (${response.status})`);
+  render(await response.json());
+}
+
+async function post(path, body = {}) {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${$("#api-key").value}`,
+    },
+    body: JSON.stringify(body),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.message || `Request failed (${response.status})`);
+  return result;
+}
+
+function setMessage(message, error = false) {
+  $("#control-message").textContent = message;
+  $("#control-message").classList.toggle("error", error);
+}
+
+function showToast(title, message, tone = "blue") {
+  const toast = document.createElement("div");
+  toast.className = `toast ${tone}`;
+  toast.innerHTML = `<span aria-hidden="true">${tone === "red" ? "!" : tone === "yellow" ? "☂" : "●"}</span><div><strong>${esc(title)}</strong><p>${esc(message)}</p></div>`;
+  $("#toast-region").append(toast);
+  window.setTimeout(() => {
+    toast.classList.add("leaving");
+    window.setTimeout(() => toast.remove(), 250);
+  }, 4500);
+}
+
+function eventNotification(name, payload) {
+  const now = Date.now();
+  if (now - (state.lastToast[name] || 0) < 8000) return;
+  const detail = payload?.data || {};
+  if (name === "weather.alert")
+    showToast("New weather alert", detail.title || "Conditions changed nearby", "yellow");
+  else if (name === "pothole.detected")
+    showToast("Road hazard detected", "A possible pothole was added to the live map.", "yellow");
+  else if (name === "safety.collision" && ["high", "critical"].includes(detail.level))
+    showToast("Collision risk", eventAction(detail), "red");
+  else if (name === "safety.visibility" && ["high", "critical"].includes(detail.level))
+    showToast("Low visibility", eventAction(detail), "red");
+  else if (name === "safety.traffic_signal")
+    showToast("Traffic-light braking", eventAction(detail), "red");
+  else return;
+  state.lastToast[name] = now;
+}
+
+function connectEvents() {
+  if (state.stream) state.stream.close();
+  const connection = $("#connection");
+  const stream = new EventSource("/api/events");
+  state.stream = stream;
+  stream.onopen = () => {
+    connection.className = "connection live";
+    connection.innerHTML = "<i></i><span>Live</span>";
+  };
+  stream.onerror = () => {
+    connection.className = "connection offline";
+    connection.innerHTML = "<i></i><span>Reconnecting</span>";
+  };
+  [
+    "telemetry.updated", "weather.alert", "pothole.detected", "pothole.updated",
+    "safety.collision", "safety.visibility", "safety.traffic_signal",
+  ].forEach((name) => {
+    stream.addEventListener(name, (event) => {
+      try { eventNotification(name, JSON.parse(event.data)); } catch (_) {}
+      loadState().catch(() => {});
+    });
+  });
+}
+
+function applyTheme(theme) {
+  const selected = theme === "dark" ? "dark" : "light";
+  document.documentElement.dataset.theme = selected;
+  localStorage.setItem("mausam-theme", selected);
+  const button = $("#theme-toggle");
+  button.setAttribute("aria-label", selected === "light" ? "Switch to dark theme" : "Switch to light theme");
+  $("meta[name='theme-color']").setAttribute("content", selected === "light" ? "#ffffff" : "#111318");
+}
+
+/* =========================================
+   INITIALIZATION & EVENT LISTENERS
+   ========================================= */
+
+$("#refresh").addEventListener("click", () =>
+  loadState().then(() => setMessage("Live view refreshed.")).catch((error) => setMessage(error.message, true)),
+);
+$("#viewer-id").addEventListener("change", () =>
+  loadState().catch((error) => setMessage(error.message, true)),
+);
+$("#step").addEventListener("click", () =>
+  post("/api/demo/step").then(loadState).then(() => setMessage("One live demo update generated.")).catch((error) => setMessage(error.message, true)),
+);
+$("#reset").addEventListener("click", () =>
+  post("/api/demo/seed", { reset: true }).then(() => loadState()).then(() => setMessage("Demo data reset and streaming.")).catch((error) => setMessage(error.message, true)),
+);
+$("#track-user").addEventListener("click", toggleTracking);
+$("#tracker-card").addEventListener("click", (event) => {
+  if (event.target.closest("#tracker-start")) startTracking();
+  if (event.target.closest("[data-stop-tracking]")) stopTracking();
+});
+$("#theme-toggle").addEventListener("click", () =>
+  applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark"),
+);
+$("#zoom-in").addEventListener("click", () => map && map.zoomIn());
+$("#zoom-out").addEventListener("click", () => map && map.zoomOut());
+$("#fit-map").addEventListener("click", () => fitMapToData(true));
+
+$$("[data-layer]").forEach((button) =>
+  button.addEventListener("click", () => {
+    const layer = button.dataset.layer;
+    state.map.layers[layer] = !state.map.layers[layer];
+    button.classList.toggle("active", state.map.layers[layer]);
+    button.setAttribute("aria-pressed", String(state.map.layers[layer]));
+    renderMapOverlays();
+  }),
+);
+
+document.addEventListener("click", (event) => {
+  const target = event.target.closest("[data-focus-lat][data-focus-lon]");
+  if (!target) return;
+  const selected = target.dataset.selectKind
+    ? { kind: target.dataset.selectKind, id: target.dataset.selectId }
+    : null;
+  setMapCenter(
+    Number(target.dataset.focusLat),
+    Number(target.dataset.focusLon),
+    15,
+    selected,
+  );
+});
+
+// Start the app
+applyTheme(localStorage.getItem("mausam-theme") || "light");
+initMap();
+setInterval(() => {
+  $("#clock").textContent = new Date().toLocaleString([], { dateStyle: "medium", timeStyle: "medium" });
+}, 1000);
+setInterval(() => loadState().catch(() => {}), 10000);
+connectEvents();
+loadState().catch((error) => setMessage(error.message, true));
