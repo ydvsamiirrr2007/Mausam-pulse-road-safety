@@ -409,7 +409,8 @@ function tileUrl(zoom, x, y) {
   if (state.map.mode === "satellite") {
     return `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${zoom}/${y}/${x}`;
   }
-  return `https://tile.openstreetmap.org/${zoom}/${x}/${y}.png`;
+  // Switched to Esri Street Map to fix the 403 Access Blocked error
+  return `https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/${zoom}/${y}/${x}`;
 }
 
 function renderTiles() {
