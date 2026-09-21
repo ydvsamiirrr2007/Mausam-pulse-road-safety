@@ -465,21 +465,25 @@ class Database:
         return result
 
     def counts(self) -> dict[str, int]:
-        with self.connection() as conn:
-            return {
-                table: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-               import sqlite3
-               for table in tables:
-                  if table not in tables:
-                      continue
-                 query = f"SELECT COUNT(*) FROM {sqlite3.escape_identifier(table)}"
-                 conn.execute(query)
-            }
+    """Return record counts for each table."""
+    # Whitelist of allowed tables - prevents any injection
+    allowed_tables = ("users", "vehicles", "telemetry", "weather_alerts", "potholes", "safety_events")
+    
+    with self.connection() as conn:
+        result = {}
+        for table in allowed_tables:
+            count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            result[table] = count
+        return result
 
-    def clear_demo_data(self) -> None:
-        with self._write_lock, self.connection() as conn:
-            for table in (
-                "pothole_reports", "safety_events", "telemetry", "potholes",
-                "weather_alerts", "vehicles", "users",
-            ):
-                conn.execute(f"DELETE FROM {table}")
+def clear_demo_data(self) -> None:
+    """Clear all demonstration data from the database."""
+    # Whitelist of allowed tables
+    tables_to_clear = (
+        "pothole_reports", "safety_events", "telemetry", "potholes",
+        "weather_alerts", "vehicles", "users",
+    )
+    
+    with self._write_lock, self.connection() as conn:
+        for table in tables_to_clear:
+            conn.execute(f"DELETE FROM {table}")
