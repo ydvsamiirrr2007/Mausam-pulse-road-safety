@@ -464,7 +464,7 @@ class Database:
             result.append(item)
         return result
 
-    def counts(self) -> dict[str, int]:
+def counts(self) -> dict[str, int]:
     """Return record counts for each table."""
     # Whitelist of allowed tables - prevents any injection
     allowed_tables = ("users", "vehicles", "telemetry", "weather_alerts", "potholes", "safety_events")
