@@ -6,12 +6,23 @@ const state = {
   data: null,
   stream: null,
   lastToast: {},
-  const map = new maplibregl.Map({
-    container: 'map', // ID of your map container
-    style: 'https://tiles.openfreemap.org/styles/liberty', // The free OpenFreeMap style
-    center: [state.map.longitude, state.map.latitude], // [lng, lat]
-    zoom: state.map.zoom
-});
+  map: {
+    latitude: 19.076,
+    longitude: 72.8777,
+    zoom: 13,
+    mode: "road",
+    layers: { vehicles: true, weather: true, potholes: true },
+    fitted: false,
+    tileKey: "",
+    selected: null,
+    drag: null,
+  },
+  tracking: {
+    watchId: null,
+    location: null,
+    error: "",
+    lastFetchAt: 0,
+  },
 };
 
 function esc(value) {
@@ -398,8 +409,7 @@ function tileUrl(zoom, x, y) {
   if (state.map.mode === "satellite") {
     return `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${zoom}/${y}/${x}`;
   }
-  // Switched to Esri Street Map to fix the 403 Access Blocked error
-  return `https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/${zoom}/${y}/${x}`;
+  return `https://tile.openstreetmap.org/${zoom}/${x}/${y}.png`;
 }
 
 function renderTiles() {
@@ -456,7 +466,7 @@ function renderTiles() {
   $("#map-attribution").textContent =
     state.map.mode === "satellite"
       ? "Imagery © Esri · markers © MausamPulse"
-      : "Map © Esri · markers © MausamPulse";
+      : "© OpenStreetMap contributors · markers © MausamPulse";
 }
 
 function renderMapSelection() {
