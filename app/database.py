@@ -20,7 +20,7 @@ def utc_now() -> str:
 
 class Database:
     """SQLite database for road safety MVP."""
-    
+
     def __init__(self, path: str):
         self.path = str(Path(path))
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
@@ -192,7 +192,6 @@ class Database:
             )
         return record
 
-    # SHOULD BE:
     def user_exists(self, user_id: str) -> bool:
         """Check if a user exists."""
         if not user_id:
@@ -487,7 +486,7 @@ class Database:
     def counts(self) -> dict[str, int]:
         """Return record counts for each table."""
         allowed_tables = ("users", "vehicles", "telemetry", "weather_alerts", "potholes", "safety_events")
-        
+
         with self.connection() as conn:
             result = {}
             for table in allowed_tables:
@@ -501,7 +500,7 @@ class Database:
             "pothole_reports", "safety_events", "telemetry", "potholes",
             "weather_alerts", "vehicles", "users",
         )
-        
+
         with self._write_lock, self.connection() as conn:
             for table in tables_to_clear:
                 conn.execute(f"DELETE FROM {table}")
