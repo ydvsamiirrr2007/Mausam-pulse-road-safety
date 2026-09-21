@@ -15,10 +15,25 @@ def env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def parse_port(value: str) -> int:
+    """Parse and validate port number from string."""
+    try:
+        port = int(value)
+        if not 1 <= port <= 65535:
+            raise argparse.ArgumentTypeError(f"Port must be 1-65535, got {port}")
+        return port
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"Port must be an integer, got '{value}'")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="MausamPulse Road Safety MVP")
     parser.add_argument("--host", default=os.getenv("MAUSAM_HOST", "0.0.0.0"))
-    parser.add_argument("--port", type=int, default=int(os.getenv("MAUSAM_PORT", "8080")))
+    parser.add_argument(
+        "--port",
+        type=parse_port,
+        default=8080
+    )
     args = parser.parse_args()
     app = Application(
         host=args.host,
