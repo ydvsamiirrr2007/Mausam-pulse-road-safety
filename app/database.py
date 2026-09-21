@@ -19,6 +19,8 @@ def utc_now() -> str:
 
 
 class Database:
+    """SQLite database for road safety MVP."""
+    
     def __init__(self, path: str):
         self.path = str(Path(path))
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
@@ -27,6 +29,7 @@ class Database:
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
+        """Context manager for database connections."""
         conn = sqlite3.connect(self.path, timeout=15, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
@@ -38,6 +41,7 @@ class Database:
             conn.close()
 
     def initialize(self) -> None:
+        """Create database schema."""
         schema = """
         CREATE TABLE IF NOT EXISTS users (
             id TEXT PRIMARY KEY,
@@ -133,9 +137,11 @@ class Database:
 
     @staticmethod
     def _id(prefix: str) -> str:
+        """Generate a unique ID with given prefix."""
         return f"{prefix}_{uuid.uuid4().hex[:16]}"
 
     def create_user(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Create a new user."""
         record = {
             "id": payload.get("id") or self._id("usr"),
             "display_name": payload["display_name"],
@@ -159,6 +165,7 @@ class Database:
         return record
 
     def create_vehicle(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Create a new vehicle."""
         record = {
             "id": payload.get("id") or self._id("veh"),
             "owner_user_id": payload["owner_user_id"],
@@ -186,10 +193,12 @@ class Database:
         return record
 
     def user_exists(self, user_id: str) -> bool:
+        """Check if a user exists."""
         with self.connection() as conn:
             return conn.execute("SELECT 1 FROM users WHERE id = ?", (user_id,)).fetchone() is not None
 
     def vehicle_for_user(self, vehicle_id: str, user_id: str) -> bool:
+        """Check if vehicle belongs to user."""
         with self.connection() as conn:
             return conn.execute(
                 "SELECT 1 FROM vehicles WHERE id = ? AND owner_user_id = ?",
@@ -197,6 +206,7 @@ class Database:
             ).fetchone() is not None
 
     def latest_telemetry(self, vehicle_id: str) -> dict[str, Any] | None:
+        """Get the latest telemetry for a vehicle."""
         with self.connection() as conn:
             row = conn.execute(
                 "SELECT * FROM telemetry WHERE vehicle_id = ? ORDER BY observed_at DESC LIMIT 1",
@@ -209,9 +219,8 @@ class Database:
         value["assessments"] = json.loads(value.pop("assessments_json"))
         return value
 
-    def insert_telemetry(
-        self, payload: dict[str, Any], assessments: dict[str, Any]
-    ) -> dict[str, Any]:
+    def insert_telemetry(self, payload: dict[str, Any], assessments: dict[str, Any]) -> dict[str, Any]:
+        """Insert telemetry data with assessments."""
         record_id = self._id("tel")
         created_at = utc_now()
         with self._write_lock, self.connection() as conn:
@@ -244,6 +253,7 @@ class Database:
         level: str,
         details: dict[str, Any],
     ) -> dict[str, Any]:
+        """Insert a safety event."""
         record = {
             "id": self._id("evt"),
             "vehicle_id": payload["vehicle_id"],
@@ -270,6 +280,7 @@ class Database:
         return record
 
     def create_weather_alert(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Create a weather alert."""
         record = {
             "id": payload.get("id") or self._id("wx"),
             "event_type": payload["event_type"],
@@ -302,6 +313,7 @@ class Database:
         longitude: float | None = None,
         now: str | None = None,
     ) -> list[dict[str, Any]]:
+        """Get active weather alerts."""
         now = now or utc_now()
         with self.connection() as conn:
             rows = conn.execute(
@@ -336,6 +348,7 @@ class Database:
         reported_at: str,
         cluster_radius_m: float = 25.0,
     ) -> dict[str, Any]:
+        """Report a pothole and cluster with nearby reports."""
         with self._write_lock, self.connection() as conn:
             candidates = conn.execute(
                 "SELECT * FROM potholes ORDER BY last_reported_at DESC LIMIT 500"
@@ -353,7 +366,6 @@ class Database:
                 count = selected["report_count"] + 1
                 strongest = max(float(selected["strongest_signal"]), signal_confidence)
                 confidence, status = aggregate_pothole_confidence(count, len(vehicles), strongest)
-                # Gradually average location to reduce single-device GPS noise.
                 weight = min(selected["report_count"], 5)
                 new_lat = (selected["latitude"] * weight + latitude) / (weight + 1)
                 new_lon = (selected["longitude"] * weight + longitude) / (weight + 1)
@@ -406,6 +418,7 @@ class Database:
         longitude: float | None = None,
         radius_km: float = 25.0,
     ) -> list[dict[str, Any]]:
+        """Get nearby potholes."""
         with self.connection() as conn:
             rows = conn.execute(
                 "SELECT * FROM potholes ORDER BY confidence DESC, last_reported_at DESC LIMIT 500"
@@ -425,6 +438,7 @@ class Database:
         return result
 
     def live_vehicles(self) -> list[dict[str, Any]]:
+        """Get all vehicles with latest telemetry."""
         query = """
         SELECT v.*, u.display_name AS user_display_name, u.full_name,
                u.emergency_contact, u.share_live_identity AS user_sharing,
@@ -452,6 +466,7 @@ class Database:
         return result
 
     def recent_events(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Get recent safety events."""
         with self.connection() as conn:
             rows = conn.execute(
                 "SELECT * FROM safety_events ORDER BY observed_at DESC LIMIT ?",
@@ -464,26 +479,24 @@ class Database:
             result.append(item)
         return result
 
-def counts(self) -> dict[str, int]:
-    """Return record counts for each table."""
-    # Whitelist of allowed tables - prevents any injection
-    allowed_tables = ("users", "vehicles", "telemetry", "weather_alerts", "potholes", "safety_events")
-    
-    with self.connection() as conn:
-        result = {}
-        for table in allowed_tables:
-            count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-            result[table] = count
-        return result
+    def counts(self) -> dict[str, int]:
+        """Return record counts for each table."""
+        allowed_tables = ("users", "vehicles", "telemetry", "weather_alerts", "potholes", "safety_events")
+        
+        with self.connection() as conn:
+            result = {}
+            for table in allowed_tables:
+                count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                result[table] = count
+            return result
 
-def clear_demo_data(self) -> None:
-    """Clear all demonstration data from the database."""
-    # Whitelist of allowed tables
-    tables_to_clear = (
-        "pothole_reports", "safety_events", "telemetry", "potholes",
-        "weather_alerts", "vehicles", "users",
-    )
-    
-    with self._write_lock, self.connection() as conn:
-        for table in tables_to_clear:
-            conn.execute(f"DELETE FROM {table}")
+    def clear_demo_data(self) -> None:
+        """Clear all demonstration data from the database."""
+        tables_to_clear = (
+            "pothole_reports", "safety_events", "telemetry", "potholes",
+            "weather_alerts", "vehicles", "users",
+        )
+        
+        with self._write_lock, self.connection() as conn:
+            for table in tables_to_clear:
+                conn.execute(f"DELETE FROM {table}")
