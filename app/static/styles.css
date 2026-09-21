@@ -652,3 +652,26 @@ footer a { color: var(--blue); font-weight: 700; text-decoration: none; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+#map {
+  height: 100%; /* or a fixed height like 600px */
+  width: 100%;
+  position: relative;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #e5e3df; /* Fallback color while loading */
+}
+
+/* Ensure MapLibre canvas fills the container */
+#map .maplibregl-canvas {
+  outline: none;
+}
+
+/* Keep your custom markers above the map canvas */
+#map-layers {
+  z-index: 2;
+  pointer-events: none; /* Let clicks pass through to the map */
+}
+#map-layers > * {
+  pointer-events: auto; /* Re-enable clicks on markers */
+}
