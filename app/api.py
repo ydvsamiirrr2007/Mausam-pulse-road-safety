@@ -150,7 +150,10 @@ class RoadSafetyHandler(BaseHTTPRequestHandler):
         mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         self.send_response(HTTPStatus.OK)
         self._base_headers()
-        self.send_header("Content-Type", f"{mime}; charset=utf-8" if mime.startswith("text/") or "javascript" in mime else mime)
+        self.send_header(
+            "Content-Type",
+            f"{mime}; charset=utf-8" if mime.startswith("text/") or "javascript" in mime else mime,
+        )
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -163,6 +166,7 @@ class RoadSafetyHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
+    # ------------------------------------------------------------------ GET
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
@@ -176,19 +180,27 @@ class RoadSafetyHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/schema":
                 return self._json(HTTPStatus.OK, API_SCHEMA)
             if parsed.path == "/api/health":
-                return self._json(HTTPStatus.OK, {
-                    "status": "ready",
-                    "counts": self.server.service.db.counts(),
-                    "demo_running": bool(self.server.simulator and self.server.simulator.running),
-                })
+                return self._json(
+                    HTTPStatus.OK,
+                    {
+                        "status": "ready",
+                        "counts": self.server.service.db.counts(),
+                        "demo_running": bool(
+                            self.server.simulator and self.server.simulator.running
+                        ),
+                    },
+                )
             if parsed.path == "/api/state":
                 viewer = self.headers.get("X-Viewer-User-Id") if self._authenticated() else None
-                return self._json(HTTPStatus.OK, self.server.service.state(
-                    latitude=_as_float(query, "lat"),
-                    longitude=_as_float(query, "lon"),
-                    radius_km=_as_float(query, "radius_km", 25.0) or 25.0,
-                    viewer_user_id=viewer,
-                ))
+                return self._json(
+                    HTTPStatus.OK,
+                    self.server.service.state(
+                        latitude=_as_float(query, "lat"),
+                        longitude=_as_float(query, "lon"),
+                        radius_km=_as_float(query, "radius_km", 25.0) or 25.0,
+                        viewer_user_id=viewer,
+                    ),
+                )
             if parsed.path == "/api/weather-alerts":
                 alerts = self.server.service.db.active_weather_alerts(
                     _as_float(query, "lat"), _as_float(query, "lon")
@@ -196,7 +208,8 @@ class RoadSafetyHandler(BaseHTTPRequestHandler):
                 return self._json(HTTPStatus.OK, {"alerts": alerts})
             if parsed.path == "/api/potholes":
                 items = self.server.service.public_potholes(
-                    _as_float(query, "lat"), _as_float(query, "lon"),
+                    _as_float(query, "lat"),
+                    _as_float(query, "lon"),
                     _as_float(query, "radius_km", 25.0) or 25.0,
                 )
                 return self._json(HTTPStatus.OK, {"potholes": items})
@@ -208,6 +221,7 @@ class RoadSafetyHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "Unexpected server error", str(exc))
 
+    # ----------------------------------------------------------------- POST
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         if not self._require_auth():
@@ -231,6 +245,13 @@ class RoadSafetyHandler(BaseHTTPRequestHandler):
                 if self.server.simulator is None:
                     self.server.simulator = DemoSimulator(self.server.service)
                     self.server.service.seed_demo()
+                # Reject manual step while the background simulator is running
+                # to prevent a race condition on internal simulator state.
+                if self.server.simulator.running:
+                    return self._error(
+                        HTTPStatus.CONFLICT,
+                        "Simulator is running; stop it before manual step.",
+                    )
                 result = self.server.simulator.step()
                 return self._json(HTTPStatus.OK, {"updates": result})
             self._error(HTTPStatus.NOT_FOUND, "Resource not found")
@@ -245,6 +266,7 @@ class RoadSafetyHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "Unexpected server error", str(exc))
 
+    # ------------------------------------------------------------------ SSE
     def _serve_events(self) -> None:
         target = self.server.service.events.subscribe()
         self.send_response(HTTPStatus.OK)
@@ -280,14 +302,26 @@ class Application:
         host: str = "0.0.0.0",
         port: int = 8080,
         database_path: str = "data/mausam-pulse.db",
-        api_key: str = "demo-local-key",
+        api_key: str | None = None,
         cors_origin: str = "http://localhost:8080",
         demo_mode: bool = True,
         demo_interval_s: float = 2.0,
     ):
+        # Prefer the environment variable over a hard-coded literal.
+        resolved_key = api_key or os.getenv("MAUSAM_API_KEY")
+        if not resolved_key:
+            if demo_mode:
+                # Safe, clearly-labelled fallback for local demos only.
+                resolved_key = "demo-local-key"
+            else:
+                raise ValueError(
+                    "MAUSAM_API_KEY must be set when demo_mode is False."
+                )
         self.db = Database(database_path)
         self.service = RoadSafetyService(self.db)
-        self.server = RoadSafetyHTTPServer((host, port), self.service, api_key, cors_origin)
+        self.server = RoadSafetyHTTPServer(
+            (host, port), self.service, resolved_key, cors_origin
+        )
         self.simulator = DemoSimulator(self.service, demo_interval_s)
         self.server.simulator = self.simulator
         self.demo_mode = demo_mode
