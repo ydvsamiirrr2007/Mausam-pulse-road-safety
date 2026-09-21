@@ -468,7 +468,12 @@ class Database:
         with self.connection() as conn:
             return {
                 table: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-                for table in ("users", "vehicles", "telemetry", "weather_alerts", "potholes", "safety_events")
+               import sqlite3
+               for table in tables:
+                  if table not in tables:
+                      continue
+                 query = f"SELECT COUNT(*) FROM {sqlite3.escape_identifier(table)}"
+                 conn.execute(query)
             }
 
     def clear_demo_data(self) -> None:
