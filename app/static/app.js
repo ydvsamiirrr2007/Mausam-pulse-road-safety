@@ -6,23 +6,12 @@ const state = {
   data: null,
   stream: null,
   lastToast: {},
-  map: {
-    latitude: 19.076,
-    longitude: 72.8777,
-    zoom: 13,
-    mode: "road",
-    layers: { vehicles: true, weather: true, potholes: true },
-    fitted: false,
-    tileKey: "",
-    selected: null,
-    drag: null,
-  },
-  tracking: {
-    watchId: null,
-    location: null,
-    error: "",
-    lastFetchAt: 0,
-  },
+  const map = new maplibregl.Map({
+    container: 'map', // ID of your map container
+    style: 'https://tiles.openfreemap.org/styles/liberty', // The free OpenFreeMap style
+    center: [state.map.longitude, state.map.latitude], // [lng, lat]
+    zoom: state.map.zoom
+});
 };
 
 function esc(value) {
