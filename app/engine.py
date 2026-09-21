@@ -316,12 +316,12 @@ def aggregate_pothole_confidence(
     strongest_signal: float,
 ) -> tuple[float, str]:
     """Calculate confidence score and status for pothole detection.
-    
+
     Args:
         report_count: Total number of reports for this pothole.
         distinct_vehicles: Number of different vehicles that reported it.
         strongest_signal: Highest confidence signal from all reports.
-    
+
     Returns:
         Tuple of (confidence_score, status_string).
     """
@@ -329,18 +329,27 @@ def aggregate_pothole_confidence(
         raise ValueError(
             f"Invalid counts: report_count={report_count}, distinct_vehicles={distinct_vehicles}"
         )
-    
+    # A caller cannot have more distinct vehicles than total reports.
+    # Without this guard, a malicious or buggy caller could pass
+    # distinct_vehicles=5, report_count=1 and inflate the confidence
+    # score through the distinct-vehicle bonus below.
+    if distinct_vehicles > report_count:
+        raise ValueError(
+            f"distinct_vehicles ({distinct_vehicles}) cannot exceed "
+            f"report_count ({report_count})"
+        )
+
     confidence = strongest_signal + min(0.28, max(0, distinct_vehicles - 1) * 0.14)
     confidence += min(0.08, max(0, report_count - distinct_vehicles) * 0.02)
     confidence = round(clamp(confidence, 0.0, 0.99), 2)
-    
+
     if distinct_vehicles >= 3 and confidence >= 0.75:
         status = "verified"
     elif distinct_vehicles >= 2 and confidence >= 0.55:
         status = "likely"
     else:
         status = "unverified"
-    
+
     return confidence, status
 
 
