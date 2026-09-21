@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
@@ -26,6 +27,23 @@ class ValidationError(ValueError):
     def __init__(self, errors: list[str]):
         self.errors = errors
         super().__init__("; ".join(errors))
+
+
+def _sanitize_text(value: Any, *, max_length: int | None = None) -> str:
+    """Trim, HTML-escape, and optionally truncate a free-text value.
+
+    Escaping at the validation boundary means no value written to the
+    database can be interpreted as markup, even if the dashboard ever
+    renders it via ``innerHTML``. Values are preserved as-is when the
+    frontend uses ``textContent``; only dangerous metacharacters are
+    converted to entities.
+    """
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if max_length is not None and len(text) > max_length:
+        text = text[:max_length]
+    return html.escape(text, quote=True)
 
 
 def _required(payload: dict[str, Any], names: Iterable[str], errors: list[str]) -> None:
@@ -90,16 +108,22 @@ def _timestamp(value: Any, name: str, errors: list[str], default: str | None = N
 def validate_user(payload: dict[str, Any]) -> dict[str, Any]:
     errors: list[str] = []
     _required(payload, ["display_name"], errors)
-    display_name = str(payload.get("display_name", "")).strip()
-    if len(display_name) > 80:
+    raw_name = str(payload.get("display_name", "")).strip()
+    if len(raw_name) > 80:
         errors.append("display_name must be 80 characters or fewer")
     if errors:
         raise ValidationError(errors)
+    display_name = _sanitize_text(raw_name, max_length=80)
+    raw_full = str(payload.get("full_name") or "").strip()
+    if not raw_full:
+        raw_full = raw_name
+    full_name = _sanitize_text(raw_full, max_length=120)
+    emergency_contact = _sanitize_text(payload.get("emergency_contact"), max_length=80) or None
     return {
         "id": payload.get("id"),
         "display_name": display_name,
-        "full_name": str(payload.get("full_name") or display_name).strip(),
-        "emergency_contact": payload.get("emergency_contact"),
+        "full_name": full_name,
+        "emergency_contact": emergency_contact,
         "share_live_identity": bool(payload.get("share_live_identity", False)),
     }
 
@@ -112,11 +136,11 @@ def validate_vehicle(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": payload.get("id"),
         "owner_user_id": str(payload["owner_user_id"]),
-        "display_name": str(payload["display_name"]).strip(),
-        "manufacturer": payload.get("manufacturer"),
-        "model": payload.get("model"),
-        "registration_number": payload.get("registration_number"),
-        "color": payload.get("color"),
+        "display_name": _sanitize_text(payload["display_name"], max_length=120),
+        "manufacturer": _sanitize_text(payload.get("manufacturer"), max_length=80) or None,
+        "model": _sanitize_text(payload.get("model"), max_length=80) or None,
+        "registration_number": _sanitize_text(payload.get("registration_number"), max_length=40) or None,
+        "color": _sanitize_text(payload.get("color"), max_length=40) or None,
         "share_live_identity": bool(payload.get("share_live_identity", False)),
     }
 
@@ -186,15 +210,18 @@ def validate_weather_alert(payload: dict[str, Any]) -> dict[str, Any]:
         "id": payload.get("id"),
         "event_type": event,
         "severity": severity,
-        "title": str(payload["title"]).strip(),
-        "description": str(payload["description"]).strip(),
+        "title": _sanitize_text(payload["title"], max_length=200),
+        "description": _sanitize_text(payload["description"], max_length=2000),
         "latitude": latitude,
         "longitude": longitude,
         "radius_km": radius,
         "starts_at": starts,
         "ends_at": ends,
-        "source": str(payload.get("source", "manual")),
-        "instructions": str(payload.get("instructions", "Monitor local official guidance.")),
+        "source": _sanitize_text(payload.get("source", "manual"), max_length=200) or "manual",
+        "instructions": _sanitize_text(
+            payload.get("instructions", "Monitor local official guidance."),
+            max_length=2000,
+        ),
     }
 
 
